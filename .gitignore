@@ -1,0 +1,53 @@
+# 依赖
+node_modules/
+
+# 构建输出
+dist/
+dist-electron/
+release/
+*.local
+
+# Vite 缓存
+.vite/
+
+# TypeScript 缓存
+*.tsbuildinfo
+
+# Electron Builder 缓存
+.electron-builder/
+
+# 测试覆盖率
+coverage/
+
+# 录制文件和截图（运行时生成）
+recordings/
+*.png
+*.jpg
+*.jpeg
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 日志
+*.log
+logs/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器配置（可选）
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 调试文件
+debug-*.png
+error-*.png
+
+# pnpm lock file
+pnpm-lock.yaml

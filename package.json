@@ -1,0 +1,70 @@
+{
+  "name": "chat-browser-agent",
+  "version": "1.0.0",
+  "description": "Interactive chat agent for browser automation with operation recording",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "preview": "vite preview",
+    "electron:dev": "vite",
+    "electron:build": "vite build && electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:agent": "vitest run --reporter=verbose __tests__/agent/"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "cheerio": "^1.0.0",
+    "lodash": "^4.17.21",
+    "playwright": "1.56.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "10.1.0",
+    "uuid": "^11.0.3",
+    "vm2": "^3.9.19"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.17.13",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^2.1.9",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.browser-agent.chat",
+    "productName": "Chat Browser Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
+}

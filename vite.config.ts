@@ -1,0 +1,53 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import electron from 'vite-plugin-electron'
+import renderer from 'vite-plugin-electron-renderer'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [
+    react(),
+    electron([
+      {
+        entry: 'electron/main.ts',
+        onstart(args) {
+          // startup() will: 1) kill old Electron process, 2) start new one
+          // This ensures only ONE Electron instance runs at a time
+          args.startup()
+        },
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              external: ['playwright', '@anthropic-ai/sdk', 'vm2']
+            }
+          }
+        }
+      },
+      {
+        entry: 'electron/preload.ts',
+        onstart(options) {
+          // Preload changes: just reload the renderer window
+          options.reload()
+        },
+        vite: {
+          build: {
+            outDir: 'dist-electron'
+          }
+        }
+      }
+    ]),
+    renderer()
+  ],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+      '@electron': path.resolve(__dirname, './electron'),
+      '@dsl': path.resolve(__dirname, './dsl')
+    }
+  },
+  build: {
+    outDir: 'dist'
+  }
+})
+
