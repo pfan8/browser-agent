@@ -19,6 +19,11 @@ release/
 # 测试覆盖率
 coverage/
 
+# E2E 测试产物
+test-results/
+playwright-report/
+playwright/.cache/
+
 # 录制文件和截图（运行时生成）
 recordings/
 *.png

@@ -394,15 +394,24 @@ export function useReActAgent(): ReActAgentHookReturn {
       const result = await window.electronAPI.agent.executeTask(task);
       
       if (result.success) {
+        // Show success message with summary if available
+        const successContent = result.result 
+          ? String(result.result) 
+          : `✓ 任务完成`;
         updateMessage(msgId, {
-          content: `✓ 任务完成`,
+          content: successContent,
           status: 'success',
           plan: result.plan,
         });
       } else {
+        // Show full failure summary if available, otherwise show error
+        const failureContent = result.result 
+          ? String(result.result) 
+          : `✗ 任务失败: ${result.error || 'Unknown error'}`;
         updateMessage(msgId, {
-          content: `✗ 任务失败: ${result.error}`,
+          content: failureContent,
           status: 'error',
+          error: result.error,
         });
       }
       
@@ -700,21 +709,30 @@ export function useReActAgent(): ReActAgentHookReturn {
 
     unsubscribers.push(
       window.electronAPI.agent.onStepFailed((data: unknown) => {
-        const stepData = data as { step?: { description?: string }; error?: string } | undefined;
-        if (stepData?.step?.description) {
-          // Update last message status instead of adding new message
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg && lastMsg.role === 'system' && lastMsg.status === 'processing') {
-              return prev.slice(0, -1).concat({
-                ...lastMsg,
-                content: `✗ ${stepData.step?.description}${stepData.error ? ` - ${stepData.error}` : ''}`,
-                status: 'error'
-              });
-            }
-            return prev;
-          });
-        }
+        const stepData = data as { 
+          step?: { description?: string; tool?: string }; 
+          error?: string;
+          action?: { tool?: string; result?: { error?: string } };
+        } | undefined;
+        
+        // Build detailed error message
+        const tool = stepData?.action?.tool || stepData?.step?.tool || 'unknown';
+        const errorMsg = stepData?.action?.result?.error || stepData?.error || 'Unknown error';
+        const description = stepData?.step?.description || tool;
+        
+        // Update last message status instead of adding new message
+        setMessages(prev => {
+          const lastMsg = prev[prev.length - 1];
+          if (lastMsg && lastMsg.role === 'system' && lastMsg.status === 'processing') {
+            return prev.slice(0, -1).concat({
+              ...lastMsg,
+              content: `✗ ${description}\n⚠️ 错误: ${errorMsg}`,
+              status: 'error'
+            });
+          }
+          return prev;
+        });
+        
         refreshStatusRef.current();
       })
     );
@@ -727,8 +745,17 @@ export function useReActAgent(): ReActAgentHookReturn {
     );
 
     unsubscribers.push(
-      window.electronAPI.agent.onTaskFailed(() => {
+      window.electronAPI.agent.onTaskFailed((data: unknown) => {
         setIsRunning(false);
+        
+        // If there's a message/summary in the failure data, it will be handled by executeTask
+        // This is just for state updates
+        const failData = data as { error?: string; message?: string } | undefined;
+        if (failData?.message) {
+          // Task failure with summary - the summary should already be shown by executeTask
+          console.log('Task failed with summary');
+        }
+        
         refreshStatusRef.current();
       })
     );

@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+      "electron-debug": {
+        "command": "node",
+        "args": ["/Users/roland.wang/repos/electron-mcp-server/build/index.js"]
+      }
+    }
+  }

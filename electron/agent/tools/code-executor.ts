@@ -15,6 +15,10 @@ import type {
   CodeActResult,
   ElementInfo,
 } from '../types';
+import { createLogger } from '../../utils/logger';
+
+// Create module logger
+const log = createLogger('CodeAct');
 
 // ============================================
 // Sandbox Configuration
@@ -464,7 +468,7 @@ function createSandboxAPI() {
      * Log output (captured by sandbox)
      */
     log: (...args: unknown[]) => {
-      console.log('[CodeAct]', ...args);
+      log.debug(...args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)));
     },
   };
 }

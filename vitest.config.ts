@@ -12,6 +12,17 @@ export default defineConfig({
       exclude: ['node_modules', 'dist', 'dist-electron', '__tests__'],
     },
     testTimeout: 10000,
+    // Use forks instead of threads to avoid orphan processes with vm2
+    // vm2 uses synchronous blocking that can leave worker_threads in uninterruptible state
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        // Allow forked processes to be killed properly on Ctrl+C
+        isolate: true,
+      },
+    },
+    // Ensure proper cleanup on test exit
+    teardownTimeout: 5000,
   },
   resolve: {
     alias: {

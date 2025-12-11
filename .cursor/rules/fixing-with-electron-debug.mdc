@@ -1,0 +1,88 @@
+---
+alwaysApply: false
+---
+
+# Electron Application Debugging Rule
+
+## Description
+
+This rule defines the debugging protocol for fixing issues in the Browser Agent project. Since this is an Electron-based desktop application, debugging should leverage the Electron Debug MCP by default.
+
+## Rule
+
+When fixing bugs or issues in this project, **use the Debug Electron MCP by default** to debug the Electron application, unless one of the following exceptions applies:
+
+### Exceptions (When NOT to use Electron Debug MCP)
+
+1. **Pure React/Frontend Issues**: Problems isolated to the React renderer (`src/` directory) that don't involve:
+   - IPC communication
+   - Preload scripts
+   - Main process interactions
+   
+2. **Build/Configuration Issues**: Problems with:
+   - `package.json` dependencies
+   - TypeScript configuration
+   - Vite/build tooling
+   - ESLint/Prettier configuration
+   
+3. **Test-Only Issues**: Problems in test files (`__tests__/` directory) that don't require running the actual Electron app
+
+4. **Documentation/Static Files**: Changes to markdown files, comments, or static assets
+
+5. **Non-Electron Automation Scripts**: Issues in the parent project's Playwright test files (`../__tests__/`) or library files (`../lib/`)
+
+### When to Use Electron Debug MCP
+
+Use the Debug Electron MCP for:
+
+- **Main Process Issues** (`electron/main.ts`, `electron/agent/`, `electron/llm-service.ts`, etc.)
+- **Preload Script Issues** (`electron/preload.ts`)
+- **IPC Communication Problems** (handlers in main.ts, calls from renderer via window.electronAPI)
+- **Browser Controller Issues** (`electron/browser-controller.ts`)
+- **Agent Core Issues** (`electron/agent/agent-core.ts`, `electron/agent/high-level-planner.ts`, etc.)
+- **Settings/State Issues** (`electron/settings-store.ts`, checkpoint/session management)
+- **Any issue where the error manifests in the running Electron app**
+
+### Debugging Workflow
+
+1. **Identify the Issue Location**:
+   - If uncertain, default to using Electron Debug MCP
+   - Check if the code path involves main process or IPC
+   
+2. **Connect Electron Debug MCP**:
+   - Ensure the Electron app is running in development mode (`pnpm electron:dev`)
+   - Connect to the debug session
+   
+3. **Gather Information**:
+   - Use MCP to inspect application state
+   - Check console logs from both main and renderer processes
+   - Examine IPC message flow if relevant
+   
+4. **Apply Fix and Verify**:
+   - Make code changes
+   - Use MCP to verify the fix in the running application
+   - Ensure no regressions in related functionality
+
+### Project Structure Reference
+
+```
+chat-agent/
+├── electron/           # Main process (REQUIRES Electron Debug MCP)
+│   ├── main.ts         # App entry point & IPC handlers
+│   ├── preload.ts      # IPC bridge
+│   ├── browser-controller.ts  # Playwright CDP
+│   ├── agent/          # Hierarchical agent system
+│   ├── llm-service.ts  # LLM integration
+│   └── settings-store.ts      # Persistent settings
+├── src/                # React renderer (MAY NOT require MCP)
+│   ├── components/     # UI components
+│   ├── hooks/          # React hooks (useAgent, useHierarchicalAgent)
+│   └── styles/         # CSS styles
+└── dsl/                # Type definitions (USUALLY no MCP needed)
+```
+
+### Remember
+
+- **When in doubt, prefer using the Electron Debug MCP** - it's better to have debugging tools available than to troubleshoot blind
+- Many seemingly "frontend-only" issues are actually IPC-related and benefit from Electron debugging
+- The agent system spans both main and renderer processes - use MCP for agent issues by default

@@ -31,6 +31,18 @@ import { toolRegistry } from './tools/tool-registry';
 import { codeExecutor } from './tools/code-executor';
 import { GatingLogic } from './gating-logic';
 import { MemoryManager } from './memory/memory-manager';
+import { stateAwareness, StateAwareness } from './state-awareness';
+import { dangerDetector, DangerDetector } from './safety/danger-detector';
+import type { 
+  ConfirmationRequest, 
+  ConfirmationResponse, 
+  PendingAction,
+  SafetyConfig 
+} from './safety/types';
+import { createLogger } from '../utils/logger';
+
+// Create module logger
+const log = createLogger('ReactAgent');
 
 // ============================================
 // ReAct Agent Configuration
@@ -42,6 +54,7 @@ export interface ReactAgentConfig extends Partial<ReActConfig> {
   llmModel?: string;
   enableScreenshots?: boolean;
   enableDomSnapshots?: boolean;
+  safetyConfig?: Partial<SafetyConfig>;
 }
 
 // ============================================
@@ -54,9 +67,15 @@ export class ReactAgent extends EventEmitter {
   private llmModel: string = 'claude-3-haiku-20240307';
   private memoryManager: MemoryManager;
   private gatingLogic: GatingLogic;
+  private stateAwareness: StateAwareness;
+  private dangerDetector: DangerDetector;
   private state: ReActState | null = null;
   private shouldStop: boolean = false;
   private isRunning: boolean = false;
+  
+  // HI-10 ~ HI-14: Confirmation flow
+  private pendingConfirmation: ConfirmationRequest | null = null;
+  private confirmationResolver: ((response: ConfirmationResponse) => void) | null = null;
 
   constructor(
     memoryManager: MemoryManager,
@@ -66,6 +85,13 @@ export class ReactAgent extends EventEmitter {
     this.memoryManager = memoryManager;
     this.config = { ...DEFAULT_REACT_CONFIG, ...config };
     this.gatingLogic = new GatingLogic();
+    this.stateAwareness = stateAwareness;
+    this.dangerDetector = dangerDetector;
+    
+    // Apply safety config if provided
+    if (config?.safetyConfig) {
+      this.dangerDetector.updateConfig(config.safetyConfig);
+    }
     
     if (config?.anthropicApiKey) {
       this.createAnthropicClient(config.anthropicApiKey, config.anthropicBaseUrl);
@@ -89,7 +115,7 @@ export class ReactAgent extends EventEmitter {
       options.baseURL = baseUrl;
     }
     this.anthropicClient = new Anthropic(options);
-    console.log(`[ReactAgent] Anthropic client created`);
+    log.info('Anthropic client created');
   }
 
   /**
@@ -119,11 +145,11 @@ export class ReactAgent extends EventEmitter {
     error?: string;
     actions: ReActAction[];
   }> {
-    console.log('[ReactAgent] execute() called with goal:', goal);
-    console.log('[ReactAgent] Anthropic client available:', !!this.anthropicClient);
+    log.info('execute() called with goal:', goal);
+    log.debug('Anthropic client available:', !!this.anthropicClient);
     
     if (this.isRunning) {
-      console.log('[ReactAgent] Agent is already running, rejecting');
+      log.warn('Agent is already running, rejecting');
       return {
         success: false,
         error: 'Agent is already running',
@@ -146,6 +172,13 @@ export class ReactAgent extends EventEmitter {
       startTime: new Date().toISOString(),
       context,
     };
+
+    // Initialize state awareness (SA-05: context preservation)
+    this.stateAwareness.clear();
+    this.stateAwareness.setGoalContext(goal);
+    
+    // Capture initial state for change detection (SA-06)
+    await this.stateAwareness.captureState();
 
     this.emitEvent('react_iteration_started', { goal, iteration: 0 });
 
@@ -175,24 +208,38 @@ export class ReactAgent extends EventEmitter {
 
         // Check for repeated actions (prevent infinite loop)
         const recentActions = this.state.actionHistory.slice(-3);
-        const repeatedAction = recentActions.length >= 2 && 
-          recentActions.every(a => a.tool === thinkResult.action);
+        const sameToolCount = recentActions.filter(a => a.tool === thinkResult.action).length;
+        const sameToolAndArgsCount = recentActions.filter(a => 
+          a.tool === thinkResult.action && 
+          JSON.stringify(a.args) === JSON.stringify(thinkResult.args)
+        ).length;
         
-        if (repeatedAction) {
-          console.log('[ReactAgent] Detected repeated action, forcing completion');
-          // Force completion with current information
+        // If same action with same args repeated 3+ times, force completion
+        if (sameToolAndArgsCount >= 2) {
+          log.warn('Detected repeated action with same args, forcing completion');
+          
+          // Generate a summary of what was attempted
+          const summary = await this.generateTaskSummary(goal, observation, 'repeated_action');
+          
           this.state.status = 'complete';
           this.emitEvent('react_completed', {
-            success: true,
-            message: `基于当前页面信息的分析:\n\n页面: ${observation.title} (${observation.url})\n\n${thinkResult.thought}`,
+            success: false,
+            message: summary,
             iterations: this.state.iterationCount,
           });
           
           return {
-            success: true,
-            result: thinkResult.thought,
+            success: false,
+            error: 'Task could not be completed - repeated actions detected',
+            result: summary,
             actions: this.state.actionHistory,
           };
+        }
+        
+        // If same tool type repeated 3+ times (but different args), guide to try different approach
+        if (sameToolCount >= 2 && thinkResult.action === 'observe') {
+          log.info('Observe repeated multiple times, suggesting alternative actions');
+          // Don't block, but the prompt already includes guidance
         }
 
         // Check if task is complete
@@ -227,6 +274,47 @@ export class ReactAgent extends EventEmitter {
             this.emitEvent('codeact_triggered', { rules: gatingDecision.triggeredRules });
             action = await this.executeCodeActFromGating(gatingDecision, observation);
           } else {
+            // HI-10 ~ HI-14: Safety check before acting
+            const safetyResult = await this.checkActionSafety(thinkResult, observation);
+            
+            if (safetyResult.requiresConfirmation) {
+              // HI-11: Request confirmation
+              const confirmed = await this.requestConfirmation(safetyResult.confirmationRequest!);
+              
+              if (!confirmed) {
+                // HI-13: User rejected - skip this action
+                this.emitEvent('action_rejected', { 
+                  action: thinkResult.action,
+                  reason: 'User rejected dangerous action'
+                });
+                
+                // Create a skipped action record
+                action = {
+                  id: generateId('action'),
+                  thought: thinkResult.thought,
+                  tool: thinkResult.action,
+                  args: thinkResult.args,
+                  reasoning: 'Action skipped due to user rejection',
+                  confidence: 0,
+                  requiresCodeAct: false,
+                  timestamp: new Date().toISOString(),
+                  result: {
+                    success: false,
+                    error: 'Action rejected by user',
+                    observation,
+                    duration: 0,
+                  },
+                };
+                
+                // Continue to next iteration
+                this.state.actionHistory.push(action);
+                continue;
+              }
+              
+              // HI-12: User confirmed - proceed
+              this.emitEvent('action_confirmed', { action: thinkResult.action });
+            }
+            
             // 4. ACT (normal tool execution)
             action = await this.act(thinkResult, observation);
           }
@@ -235,49 +323,134 @@ export class ReactAgent extends EventEmitter {
         // Record action
         this.state.actionHistory.push(action);
 
-        // 5. VERIFY
+        // 5. VERIFY (RA-04: Enhanced verification with state-awareness)
         this.state.status = 'verifying';
-        if (action.result?.success) {
+        
+        // Use state-awareness for verification (SA-02)
+        const verificationResult = await this.verifyActionResult(action, thinkResult);
+        
+        // Log detailed action result for debugging
+        log.debug(`Action result for ${action.tool}:`, {
+          success: action.result?.success,
+          error: action.result?.error,
+          hasData: !!action.result?.data,
+        });
+        log.debug(`Verification result for ${action.tool}:`, {
+          verified: verificationResult.verified,
+          confidence: verificationResult.confidence,
+          details: verificationResult.details,
+        });
+        
+        // For read-only operations (observe, listPages, screenshot, etc.), 
+        // we only need action.result.success - verification is not meaningful
+        const isReadOnlyAction = ['observe', 'listPages', 'screenshot', 'queryDOM', 'getPageInfo'].includes(action.tool);
+        const isSuccess = action.result?.success && (isReadOnlyAction || verificationResult.verified);
+        
+        if (isSuccess) {
           this.state.consecutiveFailures = 0;
-          this.emitEvent('react_action_completed', { action });
+          this.stateAwareness.updateGoalProgress(action.tool, true);
+          log.info(`Action completed successfully: ${action.tool}`);
+          this.emitEvent('react_action_completed', { action, verification: verificationResult });
         } else {
           this.state.consecutiveFailures++;
-          this.emitEvent('react_action_failed', { action, error: action.result?.error });
+          log.warn(`Action failed (consecutiveFailures: ${this.state.consecutiveFailures}): ${action.tool}`, {
+            actionSuccess: action.result?.success,
+            actionError: action.result?.error,
+            verified: verificationResult.verified,
+            verificationDetails: verificationResult.details,
+          });
+          
+          // Error recovery attempt (ER-01 ~ ER-03)
+          const recoveryResult = await this.attemptErrorRecovery(action, observation);
+          if (recoveryResult.recovered && recoveryResult.result) {
+            this.state.consecutiveFailures = 0;
+            // Merge recovery result with observation to satisfy ReActActionResult type
+            action.result = {
+              success: recoveryResult.result.success,
+              data: recoveryResult.result.data,
+              error: recoveryResult.result.error,
+              observation: action.result?.observation || observation,
+              duration: recoveryResult.result.duration || 0,
+            };
+            log.info(`Action recovered: ${action.tool}`);
+            this.emitEvent('react_action_recovered', { action, recovery: recoveryResult });
+          } else {
+            log.error(`Action failed and could not recover: ${action.tool}`, action.result?.error);
+            this.emitEvent('react_action_failed', { 
+              action, 
+              error: action.result?.error,
+              verification: verificationResult 
+            });
+          }
+        }
+        
+        // Check intermediate states (SA-04: loading/modal detection)
+        const intermediateState = await this.stateAwareness.getIntermediateState();
+        if (intermediateState.isBlocked) {
+          // Wait for loading/modal to complete (MS-03, MS-05)
+          await this.waitForIntermediateState(intermediateState);
         }
       }
 
       // Loop ended without completion
+      const isTooManyFailures = this.state.consecutiveFailures >= this.config.maxConsecutiveFailures;
       const reason = this.shouldStop
         ? 'Stopped by user'
-        : this.state.consecutiveFailures >= this.config.maxConsecutiveFailures
+        : isTooManyFailures
           ? 'Too many consecutive failures'
           : 'Max iterations reached';
+
+      log.warn(`Task loop ended: ${reason}`, {
+        consecutiveFailures: this.state.consecutiveFailures,
+        iterationCount: this.state.iterationCount,
+      });
+
+      // Generate summary for the user
+      const observation = this.state.currentObservation || {
+        timestamp: new Date().toISOString(),
+        url: 'unknown',
+        title: 'unknown',
+      };
+      const summaryReason: 'consecutive_failures' | 'max_iterations' = isTooManyFailures ? 'consecutive_failures' : 'max_iterations';
+      const summary = await this.generateTaskSummary(goal, observation, summaryReason);
 
       this.state.status = 'error';
       this.emitEvent('react_completed', {
         success: false,
         error: reason,
+        message: summary,
         iterations: this.state.iterationCount,
       });
 
       return {
         success: false,
         error: reason,
+        result: summary,
         actions: this.state.actionHistory,
       };
     } catch (error) {
       this.state!.status = 'error';
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       
+      // Generate error summary
+      const observation = this.state?.currentObservation || {
+        timestamp: new Date().toISOString(),
+        url: 'unknown',
+        title: 'unknown',
+      };
+      const summary = await this.generateTaskSummary(goal, observation, 'error');
+      
       this.emitEvent('react_completed', {
         success: false,
         error: errorMsg,
+        message: summary,
         iterations: this.state?.iterationCount || 0,
       });
 
       return {
         success: false,
         error: errorMsg,
+        result: summary,
         actions: this.state?.actionHistory || [],
       };
     } finally {
@@ -341,15 +514,15 @@ export class ReactAgent extends EventEmitter {
    */
   private async think(goal: string, observation: Observation): Promise<ReActThinkResult> {
     if (!this.anthropicClient) {
-      console.log('[ReactAgent] No Anthropic client, using rule-based thinking');
+      log.debug('No Anthropic client, using rule-based thinking');
       // Fallback to rule-based thinking
       return this.ruleBasedThink(goal, observation);
     }
 
     try {
       const prompt = this.buildThinkPrompt(goal, observation);
-      console.log('[ReactAgent] Sending to LLM...');
-      console.log('[ReactAgent] Prompt (first 500 chars):', prompt.substring(0, 500));
+      log.debug('Sending to LLM...');
+      log.debug('Prompt (first 500 chars):', prompt.substring(0, 500));
       
       const response = await this.anthropicClient.messages.create({
         model: this.llmModel,
@@ -360,16 +533,16 @@ export class ReactAgent extends EventEmitter {
 
       const content = response.content[0];
       if (content.type !== 'text') {
-        console.error('[ReactAgent] Unexpected response type:', content.type);
+        log.error('Unexpected response type:', content.type);
         throw new Error('Unexpected response type');
       }
 
-      console.log('[ReactAgent] LLM Response:', content.text);
+      log.debug('LLM Response:', content.text);
       const result = this.parseThinkResponse(content.text);
-      console.log('[ReactAgent] Parsed result:', JSON.stringify(result, null, 2));
+      log.debug('Parsed result:', JSON.stringify(result, null, 2));
       return result;
     } catch (error) {
-      console.error('[ReactAgent] Think failed:', error);
+      log.error('Think failed:', error);
       return this.ruleBasedThink(goal, observation);
     }
   }
@@ -402,11 +575,19 @@ export class ReactAgent extends EventEmitter {
     };
 
     try {
+      log.info(`Executing action: ${thinkResult.action}`, thinkResult.args);
+      
       const toolResult = await this.executeWithTimeout(
         thinkResult.action,
         thinkResult.args,
         this.config.actionTimeout
       );
+
+      if (toolResult.success) {
+        log.info(`Action ${thinkResult.action} succeeded`);
+      } else {
+        log.warn(`Action ${thinkResult.action} failed:`, toolResult.error);
+      }
 
       // Get new observation after action
       const newObservation = await this.observe();
@@ -419,9 +600,12 @@ export class ReactAgent extends EventEmitter {
         duration: Date.now() - startTime,
       };
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      log.error(`Action ${thinkResult.action} threw exception:`, errorMsg);
+      
       action.result = {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMsg,
         observation,
         duration: Date.now() - startTime,
       };
@@ -576,6 +760,416 @@ export class ReactAgent extends EventEmitter {
   // Helper Methods
   // ============================================
 
+  // ============================================
+  // Safety Check and Confirmation (HI-10 ~ HI-14)
+  // ============================================
+
+  /**
+   * HI-10: Check if action requires confirmation
+   */
+  private async checkActionSafety(
+    thinkResult: ReActThinkResult,
+    observation: Observation
+  ): Promise<{
+    requiresConfirmation: boolean;
+    confirmationRequest?: ConfirmationRequest;
+  }> {
+    // Build pending action for detection
+    const pendingAction: PendingAction = {
+      tool: thinkResult.action,
+      args: thinkResult.args,
+      thought: thinkResult.thought,
+      reasoning: thinkResult.reasoning,
+      targetElement: observation.visibleElements?.find(el => 
+        thinkResult.args.selector && el.selector === thinkResult.args.selector
+      ) ? {
+        selector: thinkResult.args.selector as string,
+        tag: observation.visibleElements!.find(el => el.selector === thinkResult.args.selector)!.tag,
+        text: observation.visibleElements!.find(el => el.selector === thinkResult.args.selector)!.text || '',
+        attributes: observation.visibleElements!.find(el => el.selector === thinkResult.args.selector)!.attributes,
+        boundingBox: observation.visibleElements!.find(el => el.selector === thinkResult.args.selector)!.boundingBox,
+      } : undefined,
+    };
+
+    // Detect danger
+    const detectionResult = await this.dangerDetector.detect(pendingAction, {
+      url: observation.url,
+      title: observation.title,
+      html: observation.domSnapshot,
+      visibleElements: observation.visibleElements,
+    });
+
+    if (!detectionResult.isDangerous) {
+      return { requiresConfirmation: false };
+    }
+
+    // Build confirmation request
+    const confirmationRequest: ConfirmationRequest = {
+      id: generateId('confirm'),
+      timestamp: new Date().toISOString(),
+      action: pendingAction,
+      risk: detectionResult.risk,
+      preview: {
+        description: `${thinkResult.action}(${JSON.stringify(thinkResult.args)})`,
+        expectedOutcome: thinkResult.reasoning,
+        potentialRisks: detectionResult.risk.reasons,
+        elementHighlight: pendingAction.targetElement ? {
+          selector: pendingAction.targetElement.selector,
+          color: detectionResult.risk.level === 'critical' ? 'red' : 
+                 detectionResult.risk.level === 'high' ? 'orange' : 'yellow',
+          label: `Risk: ${detectionResult.risk.level}`,
+        } : undefined,
+      },
+      timeout: this.dangerDetector.getConfig().confirmationTimeout,
+      status: 'pending',
+    };
+
+    return {
+      requiresConfirmation: true,
+      confirmationRequest,
+    };
+  }
+
+  /**
+   * HI-11 ~ HI-14: Request and handle confirmation
+   */
+  private async requestConfirmation(request: ConfirmationRequest): Promise<boolean> {
+    this.pendingConfirmation = request;
+    
+    // Emit confirmation request event
+    this.emitEvent('confirmation_requested', {
+      request,
+      riskLevel: request.risk.level,
+      description: request.preview.description,
+    });
+
+    // Wait for response with timeout
+    return new Promise<boolean>((resolve) => {
+      // Set up timeout (HI-14)
+      const timeoutId = setTimeout(() => {
+        if (this.pendingConfirmation?.id === request.id) {
+          this.pendingConfirmation.status = 'timeout';
+          this.emitEvent('confirmation_timeout', { requestId: request.id });
+          this.pendingConfirmation = null;
+          this.confirmationResolver = null;
+          resolve(false);
+        }
+      }, request.timeout);
+
+      // Store resolver for external confirmation
+      this.confirmationResolver = (response: ConfirmationResponse) => {
+        clearTimeout(timeoutId);
+        
+        if (response.requestId === request.id) {
+          this.pendingConfirmation!.status = response.status === 'confirmed' ? 'confirmed' : 'rejected';
+          this.emitEvent('confirmation_received', { response });
+          this.pendingConfirmation = null;
+          this.confirmationResolver = null;
+          resolve(response.status === 'confirmed');
+        }
+      };
+    });
+  }
+
+  /**
+   * External method to provide confirmation response
+   */
+  confirmAction(confirmed: boolean, comment?: string): void {
+    if (this.confirmationResolver && this.pendingConfirmation) {
+      this.confirmationResolver({
+        requestId: this.pendingConfirmation.id,
+        status: confirmed ? 'confirmed' : 'rejected',
+        timestamp: new Date().toISOString(),
+        userComment: comment,
+      });
+    }
+  }
+
+  /**
+   * Get pending confirmation
+   */
+  getPendingConfirmation(): ConfirmationRequest | null {
+    return this.pendingConfirmation;
+  }
+
+  /**
+   * Cancel pending confirmation
+   */
+  cancelPendingConfirmation(): void {
+    if (this.pendingConfirmation) {
+      this.pendingConfirmation.status = 'cancelled';
+      this.emitEvent('confirmation_cancelled', { requestId: this.pendingConfirmation.id });
+      
+      if (this.confirmationResolver) {
+        this.confirmationResolver({
+          requestId: this.pendingConfirmation.id,
+          status: 'rejected',
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // ============================================
+  // Verification and Error Recovery (RA-04, ER-01~ER-06)
+  // ============================================
+
+  /**
+   * RA-04: Verify action result using state-awareness
+   */
+  private async verifyActionResult(
+    action: ReActAction,
+    thinkResult: ReActThinkResult
+  ): Promise<{ verified: boolean; confidence: number; details: string }> {
+    try {
+      const result = await this.stateAwareness.verifyOperation(action.tool, {
+        selector: action.args.selector,
+        text: action.args.text,
+        value: action.args.value,
+        url: action.args.url,
+        previousUrl: action.result?.observation?.url,
+        expectNavigation: action.tool === 'navigate' || action.tool === 'click',
+      });
+      
+      return {
+        verified: result.verified,
+        confidence: result.confidence,
+        details: result.details,
+      };
+    } catch {
+      return {
+        verified: action.result?.success || false,
+        confidence: 0.5,
+        details: 'Verification fallback',
+      };
+    }
+  }
+
+  /**
+   * ER-01~ER-03: Attempt error recovery
+   */
+  private async attemptErrorRecovery(
+    action: ReActAction,
+    observation: Observation
+  ): Promise<{ recovered: boolean; result?: ToolExecutionResult; strategy?: string }> {
+    const errorMsg = action.result?.error?.toLowerCase() || '';
+    
+    // ER-01: Selector retry with alternative strategies
+    if (errorMsg.includes('element not found') || errorMsg.includes('selector')) {
+      // Try alternative selectors
+      const alternatives = await this.tryAlternativeSelectors(action, observation);
+      if (alternatives.success) {
+        return { recovered: true, result: alternatives.result, strategy: 'alternative_selector' };
+      }
+    }
+    
+    // ER-02: Wait and retry for async loading
+    if (errorMsg.includes('timeout') || errorMsg.includes('not found')) {
+      await this.stateAwareness.waitForPageLoad(5000);
+      const retryResult = await this.executeWithTimeout(action.tool, action.args, this.config.actionTimeout);
+      if (retryResult.success) {
+        return { recovered: true, result: retryResult, strategy: 'wait_retry' };
+      }
+    }
+    
+    // ER-03: Scroll to find element
+    if (errorMsg.includes('not found') || errorMsg.includes('not visible')) {
+      const scrollResult = await this.tryScrollToElement(action);
+      if (scrollResult.success) {
+        return { recovered: true, result: scrollResult.result, strategy: 'scroll_find' };
+      }
+    }
+    
+    return { recovered: false };
+  }
+
+  /**
+   * Try alternative selectors for the same target element
+   */
+  private async tryAlternativeSelectors(
+    action: ReActAction,
+    observation: Observation
+  ): Promise<{ success: boolean; result?: ToolExecutionResult }> {
+    const originalSelector = action.args.selector as string;
+    if (!originalSelector) return { success: false };
+
+    // Use CodeAct to find best matching element
+    if (observation.visibleElements && observation.visibleElements.length > 0) {
+      const findResult = await codeExecutor.findElement(observation.visibleElements, originalSelector);
+      
+      if (findResult.success && findResult.result) {
+        const match = findResult.result as { found?: boolean; selector?: string };
+        if (match.found && match.selector) {
+          const retryResult = await this.executeWithTimeout(
+            action.tool,
+            { ...action.args, selector: match.selector },
+            this.config.actionTimeout
+          );
+          
+          if (retryResult.success) {
+            return { success: true, result: retryResult };
+          }
+        }
+      }
+    }
+
+    return { success: false };
+  }
+
+  /**
+   * Try scrolling to find the element
+   */
+  private async tryScrollToElement(action: ReActAction): Promise<{ success: boolean; result?: ToolExecutionResult }> {
+    const scrollDirections = ['down', 'up'];
+    
+    for (const direction of scrollDirections) {
+      // Execute scroll
+      const scrollCode = direction === 'down'
+        ? 'await page.evaluate(() => window.scrollBy(0, 500))'
+        : 'await page.evaluate(() => window.scrollBy(0, -500))';
+      
+      await toolRegistry.execute('runCode', { code: scrollCode });
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Retry action
+      const retryResult = await this.executeWithTimeout(
+        action.tool,
+        action.args,
+        this.config.actionTimeout
+      );
+      
+      if (retryResult.success) {
+        return { success: true, result: retryResult };
+      }
+    }
+    
+    return { success: false };
+  }
+
+  /**
+   * MS-03, MS-05: Wait for intermediate state to resolve
+   */
+  private async waitForIntermediateState(state: { isLoading: boolean; hasModal: boolean; blockedBy?: string }): Promise<void> {
+    const maxWait = 10000;
+    const startTime = Date.now();
+    
+    this.emitEvent('waiting_for_state', { blockedBy: state.blockedBy });
+    
+    while (Date.now() - startTime < maxWait) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const currentState = await this.stateAwareness.getIntermediateState();
+      
+      if (!currentState.isBlocked) {
+        this.emitEvent('state_resolved', { duration: Date.now() - startTime });
+        return;
+      }
+    }
+    
+    this.emitEvent('state_timeout', { blockedBy: state.blockedBy });
+  }
+
+  // ============================================
+  // Multi-Step Task Support (MS-01~MS-05)
+  // ============================================
+
+  /**
+   * MS-04: Wait for element to appear with polling
+   */
+  async waitForElement(selector: string, timeout: number = 10000): Promise<boolean> {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      const result = await toolRegistry.execute('waitForSelector', { 
+        selector, 
+        state: 'visible',
+        timeout: Math.min(2000, timeout - (Date.now() - startTime))
+      });
+      
+      if (result.success) {
+        return true;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if goal is complete using state-awareness (SA-03)
+   */
+  private async checkGoalCompletion(
+    goal: string,
+    observation: Observation
+  ): Promise<{ completed: boolean; confidence: number; reason: string }> {
+    return this.stateAwareness.isGoalCompleted(goal, observation);
+  }
+
+  /**
+   * Generate a summary of the task execution
+   */
+  private async generateTaskSummary(
+    goal: string,
+    observation: Observation,
+    reason: 'completed' | 'repeated_action' | 'max_iterations' | 'consecutive_failures' | 'error'
+  ): Promise<string> {
+    const actionHistory = this.state?.actionHistory || [];
+    const actionsSummary = actionHistory.slice(-5).map(a => 
+      `- ${a.result?.success ? '✓' : '✗'} ${a.tool}${a.result?.error ? `: ${a.result.error}` : ''}`
+    ).join('\n');
+
+    let summary = '';
+    
+    switch (reason) {
+      case 'completed':
+        summary = `## 任务完成\n\n**目标**: ${goal}\n\n**当前页面**: ${observation.title} (${observation.url})\n\n**执行摘要**:\n${actionsSummary}`;
+        break;
+        
+      case 'repeated_action':
+        summary = `## 任务未能完成\n\n**目标**: ${goal}\n\n**问题**: 检测到重复动作，无法继续执行。\n\n**当前页面**: ${observation.title} (${observation.url})\n\n**已尝试的操作**:\n${actionsSummary}\n\n**建议**: `;
+        
+        // Provide specific suggestions based on the goal
+        if (goal.toLowerCase().includes('切换') || goal.toLowerCase().includes('switch') || goal.toLowerCase().includes('tab')) {
+          summary += `目标可能在其他浏览器标签页中。请尝试:\n1. 使用 "listPages" 命令查看所有打开的标签页\n2. 找到目标页面后使用 "switchToPage" 切换`;
+        } else if (goal.toLowerCase().includes('点击') || goal.toLowerCase().includes('click')) {
+          summary += `目标元素可能不在当前可见区域，请尝试滚动页面或检查选择器是否正确`;
+        } else {
+          summary += `请检查目标是否正确，或尝试更具体的描述`;
+        }
+        break;
+        
+      case 'consecutive_failures':
+        summary = `## 任务执行失败\n\n**目标**: ${goal}\n\n**问题**: 连续多次操作失败 (${this.state?.consecutiveFailures} 次)。\n\n**当前页面**: ${observation.title} (${observation.url})\n\n**失败的操作**:\n${actionsSummary}\n\n**建议**: `;
+        
+        // Analyze failures and provide suggestions
+        const failedActions = actionHistory.filter(a => !a.result?.success);
+        const lastError = failedActions[failedActions.length - 1]?.result?.error || '';
+        
+        if (goal.toLowerCase().includes('切换') || goal.toLowerCase().includes('switch') || goal.toLowerCase().includes('tab')) {
+          summary += `目标 "${goal}" 可能在其他浏览器标签页中，而不是当前页面。请尝试:\n`;
+          summary += `1. 输入 "listPages" 查看所有打开的标签页\n`;
+          summary += `2. 找到包含目标的标签页后，使用 "switchToPage [序号]" 切换`;
+        } else if (lastError.includes('not found') || lastError.includes('selector')) {
+          summary += `目标元素未找到。可能的原因:\n1. 元素不在当前页面\n2. 页面还在加载中\n3. 选择器不正确`;
+        } else {
+          summary += `请检查:\n1. 目标是否在当前页面\n2. 是否需要先进行其他操作（如登录）\n3. 尝试更具体的描述`;
+        }
+        break;
+        
+      case 'max_iterations':
+        summary = `## 任务超时\n\n**目标**: ${goal}\n\n**问题**: 已达到最大迭代次数 (${this.state?.maxIterations})。\n\n**当前页面**: ${observation.title} (${observation.url})\n\n**已执行的操作**:\n${actionsSummary}`;
+        break;
+        
+      case 'error':
+        summary = `## 任务执行错误\n\n**目标**: ${goal}\n\n**当前页面**: ${observation.title} (${observation.url})\n\n**已尝试的操作**:\n${actionsSummary}`;
+        break;
+    }
+    
+    log.info(`Task summary generated (${reason}):`, summary.substring(0, 200));
+    return summary;
+  }
+
   /**
    * Execute tool with timeout
    */
@@ -675,33 +1269,67 @@ ${tools}
 
 ## 重要规则
 
-1. **任务完成判断**:
-   - 如果用户是询问/查看类任务（如"页面布局"、"有哪些按钮"、"当前状态"），直接根据已有信息回答，设置 isComplete=true
-   - 如果是操作类任务（如"点击"、"输入"、"导航"），执行完成后设置 isComplete=true
-   - **不要重复调用 observe**，如果已经有页面信息，直接分析并回答
+1. **关于 observe 和页面状态**:
+   - **"当前页面状态"就是最新的 observe 结果**，不需要再次调用 observe
+   - 如果已经有页面信息，直接分析并采取下一步行动
+   - 只有在页面发生变化后（如导航、点击后）才需要新的 observe
 
-2. **避免无限循环**:
-   - 如果连续2次调用同一个工具但没有进展，考虑换一种方法或报告问题
-   - 对于信息查询任务，你已经有足够信息时必须设置 isComplete=true 并在 completionMessage 中回答
+2. **多标签页操作**:
+   - 如果用户要"切换到"某个页面/标签，目标很可能在另一个浏览器标签页中
+   - **首先使用 listPages** 查看所有打开的标签页
+   - 然后使用 **switchToPage** 切换到目标标签页
+   - 不要在当前页面反复 observe 试图找到其他标签页的内容
 
-3. 每次只执行一个行动
-4. 如果需要复杂数据处理，设置 shouldCallCodeAct=true
-5. 选择器优先使用: id > data-testid > name > text > class
+3. **任务完成判断**:
+   - 询问/查看类任务：直接根据已有信息回答，设置 isComplete=true
+   - 操作类任务：执行完成后设置 isComplete=true，并在 completionMessage 中说明结果
+   - **必须在 completionMessage 中给用户一个明确的回复**
+
+4. **避免无限循环**:
+   - 如果连续2次调用同一个工具但没有进展，**必须换一种方法**
+   - 如果在当前页面找不到目标，考虑使用 listPages 查看其他标签页
+
+5. 每次只执行一个行动
+6. 选择器优先使用: id > data-testid > name > text > class
 
 只输出 JSON，不要包含其他内容。`;
   }
 
   /**
    * Build think prompt
+   * ReAct pattern: Observation includes both page state AND last action result
    */
   private buildThinkPrompt(goal: string, observation: Observation): string {
     let prompt = `## 任务目标
 ${goal}
 
-## 当前页面状态
-- URL: ${observation.url}
-- 标题: ${observation.title}
 `;
+
+    // FIRST: Show last action result prominently (this is the key observation in ReAct)
+    if (this.state && this.state.actionHistory.length > 0) {
+      const lastAction = this.state.actionHistory[this.state.actionHistory.length - 1];
+      prompt += `## 上一步执行结果\n`;
+      prompt += `- 动作: ${lastAction.tool}(${JSON.stringify(lastAction.args)})\n`;
+      prompt += `- 状态: ${lastAction.result?.success ? '✓ 成功' : '✗ 失败'}\n`;
+      
+      if (lastAction.result?.error) {
+        prompt += `- 错误: ${lastAction.result.error}\n`;
+      }
+      
+      // Show action result data (important for listPages, queryDOM, etc.)
+      if (lastAction.result?.success && lastAction.result?.data) {
+        const dataStr = JSON.stringify(lastAction.result.data, null, 2);
+        // Show more data for important actions like listPages
+        const maxLen = ['listPages', 'queryDOM', 'getPageInfo'].includes(lastAction.tool) ? 1000 : 300;
+        prompt += `- 返回数据:\n\`\`\`json\n${dataStr.slice(0, maxLen)}${dataStr.length > maxLen ? '\n...(truncated)' : ''}\n\`\`\`\n`;
+      }
+      prompt += '\n';
+    }
+
+    // SECOND: Current page state
+    prompt += `## 当前页面状态\n`;
+    prompt += `- URL: ${observation.url}\n`;
+    prompt += `- 标题: ${observation.title}\n`;
 
     if (observation.visibleElements && observation.visibleElements.length > 0) {
       prompt += `\n## 可见交互元素 (前20个)\n`;
@@ -711,19 +1339,30 @@ ${goal}
       });
     }
 
-    if (this.state && this.state.actionHistory.length > 0) {
-      prompt += `\n## 已执行的行动\n`;
-      this.state.actionHistory.slice(-5).forEach((action, i) => {
+    // THIRD: Action history summary (excluding last action which is already shown above)
+    if (this.state && this.state.actionHistory.length > 1) {
+      prompt += `\n## 历史动作摘要 (共 ${this.state.actionHistory.length} 步)\n`;
+      const olderActions = this.state.actionHistory.slice(-6, -1); // Last 5, excluding the most recent
+      
+      olderActions.forEach((action, i) => {
         const status = action.result?.success ? '✓' : '✗';
-        prompt += `${i + 1}. ${status} ${action.tool}(${JSON.stringify(action.args)})`;
-        if (action.result?.error) {
-          prompt += ` - 错误: ${action.result.error}`;
-        }
-        prompt += '\n';
+        prompt += `${i + 1}. ${status} ${action.tool}\n`;
       });
+      
+      // Add warnings based on action history
+      const observeCount = this.state.actionHistory.filter(a => a.tool === 'observe').length;
+      if (observeCount >= 2) {
+        prompt += `\n**⚠️ 注意**: 你已经执行了 ${observeCount} 次 observe。当前页面状态已经是最新的，不需要再次 observe。`;
+        prompt += `\n如果需要切换到其他标签页，请使用 **listPages** 查看所有打开的页面，然后用 **switchToPage** 切换。\n`;
+      }
+      
+      const failedCount = this.state.actionHistory.slice(-5).filter(a => !a.result?.success).length;
+      if (failedCount >= 2) {
+        prompt += `\n**⚠️ 警告**: 最近 ${failedCount} 个动作失败了。请尝试不同的方法或使用 listPages 查看其他标签页。\n`;
+      }
     }
 
-    prompt += `\n请决定下一步行动。`;
+    prompt += `\n请根据上述观察结果，决定下一步行动。`;
 
     return prompt;
   }
@@ -761,7 +1400,7 @@ ${goal}
         completionMessage: parsed.completionMessage,
       };
     } catch (error) {
-      console.error('[ReactAgent] Failed to parse think response:', error);
+      log.error('Failed to parse think response:', error);
       
       // Fallback
       return {

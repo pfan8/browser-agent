@@ -11,7 +11,13 @@
     "electron:build": "vite build && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:agent": "vitest run --reporter=verbose __tests__/agent/"
+    "test:agent": "vitest run --reporter=verbose __tests__/agent/",
+    "test:e2e": "playwright test",
+    "test:e2e:debug": "tsx scripts/run-e2e-with-debug.ts",
+    "test:e2e:fast": "tsx scripts/run-e2e-with-debug.ts --fast",
+    "test:e2e:ui": "playwright test --ui",
+    "verify:prd": "tsx scripts/verify-prd.ts",
+    "test:all": "pnpm test && pnpm test:e2e"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
@@ -25,6 +31,7 @@
     "vm2": "^3.9.19"
   },
   "devDependencies": {
+    "@playwright/test": "1.57.0",
     "@types/lodash": "^4.17.13",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
@@ -34,6 +41,7 @@
     "concurrently": "^9.1.0",
     "electron": "39.2.6",
     "electron-builder": "^25.1.8",
+    "tsx": "4.21.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vite-plugin-electron": "^0.28.8",

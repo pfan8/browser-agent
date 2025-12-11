@@ -37,6 +37,10 @@ import { LowLevelExecutor } from './low-level-executor';
 import { ReactAgent } from './react-agent';
 import { toolRegistry } from './tools/tool-registry';
 import { registerBrowserTools } from './tools/browser-tools';
+import { createLogger } from '../utils/logger';
+
+// Create module logger
+const log = createLogger('AgentCore');
 
 /**
  * Execution mode for the agent
@@ -250,12 +254,13 @@ export class AgentCore extends EventEmitter {
     plan?: TaskPlan;
     actions?: ReActAction[];
     error?: string;
+    result?: unknown; // Task completion summary
   }> {
-    console.log(`[AgentCore] executeTask called: "${task.substring(0, 100)}"`);
-    console.log(`[AgentCore] Execution mode: ${this.executionMode}`);
+    log.info(`executeTask called: "${task.substring(0, 100)}"`);
+    log.debug(`Execution mode: ${this.executionMode}`);
     
     if (this.isRunning) {
-      console.log('[AgentCore] Agent is already running, rejecting task');
+      log.warn('Agent is already running, rejecting task');
       return { success: false, error: 'Agent is already running a task' };
     }
 
@@ -270,10 +275,10 @@ export class AgentCore extends EventEmitter {
 
     // Route to appropriate execution mode
     if (this.executionMode === 'react') {
-      console.log('[AgentCore] Routing to ReactAgent...');
+      log.debug('Routing to ReactAgent...');
       return this.executeTaskReact(task);
     } else {
-      console.log('[AgentCore] Routing to Plan-Execute mode...');
+      log.debug('Routing to Plan-Execute mode...');
       return this.executeTaskPlanExecute(task);
     }
   }
@@ -286,8 +291,9 @@ export class AgentCore extends EventEmitter {
     plan?: TaskPlan;
     actions?: ReActAction[];
     error?: string;
+    result?: unknown;
   }> {
-    console.log('[AgentCore] executeTaskReact starting...');
+    log.debug('executeTaskReact starting...');
     this.isRunning = true;
     this.shouldStop = false;
     this.setStatus('executing');
@@ -301,19 +307,25 @@ export class AgentCore extends EventEmitter {
       );
 
       // Execute with ReactAgent
-      console.log('[AgentCore] Calling reactAgent.execute()...');
+      log.debug('Calling reactAgent.execute()...');
       const result = await this.reactAgent.execute(task, {
         sessionId: this.state.sessionId,
       });
-      console.log('[AgentCore] ReactAgent result:', JSON.stringify({ success: result.success, error: result.error, actionsCount: result.actions?.length }, null, 2));
+      log.info('ReactAgent result:', { success: result.success, error: result.error, actionsCount: result.actions?.length });
 
       // Finalize
       if (result.success) {
         this.setStatus('complete');
-        this.memoryManager.addMessage('agent', `Task completed successfully: ${task}`);
+        const successMessage = result.result ? String(result.result) : `Task completed successfully: ${task}`;
+        this.memoryManager.addMessage('agent', successMessage);
       } else {
         this.setStatus('error');
-        this.memoryManager.addMessage('agent', `Task failed: ${result.error || 'Unknown error'}`);
+        // Include the full summary in the message
+        const failureMessage = result.result 
+          ? String(result.result) 
+          : `Task failed: ${result.error || 'Unknown error'}`;
+        this.memoryManager.addMessage('agent', failureMessage);
+        log.info('Task failure summary:', failureMessage);
       }
 
       // Save final state
@@ -323,11 +335,12 @@ export class AgentCore extends EventEmitter {
         success: result.success,
         actions: result.actions,
         error: result.error,
+        result: result.result, // Include the summary
       };
     } catch (error) {
       this.setStatus('error');
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[AgentCore] executeTaskReact error:', errorMsg);
+      log.error('executeTaskReact error:', errorMsg);
       this.memoryManager.addMessage('agent', `Error: ${errorMsg}`);
       return { success: false, error: errorMsg };
     } finally {

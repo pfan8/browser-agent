@@ -14,6 +14,10 @@ import { generatePlaywrightScript } from './script-generator';
 import type { Operation, Recording } from '../dsl/types';
 import { getAgentCore } from './agent/agent-core';
 import type { AgentEvent } from './agent/types';
+import { createLogger } from './utils/logger';
+
+// Create module logger
+const log = createLogger('Main');
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 // Note: electron-squirrel-startup is only needed for Windows Squirrel installer
@@ -94,7 +98,7 @@ app.whenReady().then(() => {
   const keyPreview = savedLLMSettings.apiKey 
     ? `${savedLLMSettings.apiKey.substring(0, 10)}...${savedLLMSettings.apiKey.slice(-4)}`
     : 'none';
-  console.log(`[DEBUG] Loaded LLM settings: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedLLMSettings.baseUrl || 'default'}`);
+  log.debug(`Loaded LLM settings: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedLLMSettings.baseUrl || 'default'}`);
   
   createWindow();
 
@@ -117,12 +121,12 @@ app.on('window-all-closed', () => {
 // Handle termination signals for clean shutdown during hot-reload
 // This ensures the process exits properly when vite-plugin-electron restarts
 process.on('SIGTERM', () => {
-  console.log('[Main] Received SIGTERM, shutting down...');
+  log.info('Received SIGTERM, shutting down...');
   app.quit();
 });
 
 process.on('SIGINT', () => {
-  console.log('[Main] Received SIGINT, shutting down...');
+  log.info('Received SIGINT, shutting down...');
   app.quit();
 });
 
@@ -283,7 +287,7 @@ ipcMain.handle('set-llm-config', async (_event, config: { apiKey: string; baseUr
     const keyPreview = config.apiKey 
       ? `${config.apiKey.substring(0, 10)}...${config.apiKey.slice(-4)}`
       : 'none';
-    console.log(`[DEBUG] set-llm-config called: keyPreview=${keyPreview}, baseUrl=${config.baseUrl || 'default'}`);
+    log.debug(`set-llm-config called: keyPreview=${keyPreview}, baseUrl=${config.baseUrl || 'default'}`);
     
     // Save to persistent storage
     settingsStore.setLLMSettings({
@@ -293,11 +297,11 @@ ipcMain.handle('set-llm-config', async (_event, config: { apiKey: string; baseUr
     // Update AgentCore's planner with full config (including baseUrl)
     const agent = getAgent();
     agent.setLLMConfig({ apiKey: config.apiKey, baseUrl: config.baseUrl });
-    console.log(`[DEBUG] LLM config updated in settingsStore and AgentCore`);
+    log.debug('LLM config updated in settingsStore and AgentCore');
     return { success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to set LLM config';
-    console.error(`[DEBUG] set-llm-config failed:`, error);
+    log.error('set-llm-config failed:', error);
     return { success: false, error: errorMessage };
   }
 });
@@ -332,7 +336,7 @@ function getAgent() {
     const keyPreview = savedSettings.apiKey 
       ? `${savedSettings.apiKey.substring(0, 10)}...${savedSettings.apiKey.slice(-4)}`
       : 'none';
-    console.log(`[Agent] Initializing: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}`);
+    log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}`);
     agentInitialized = true;
   }
   
@@ -348,7 +352,7 @@ function safeSerialize(data: unknown): unknown {
     // Use JSON stringify/parse to remove non-serializable content
     return JSON.parse(JSON.stringify(data));
   } catch (e) {
-    console.warn('[Main] Failed to serialize event data:', e);
+    log.warn('Failed to serialize event data:', e);
     // Return a safe fallback
     if (typeof data === 'object' && data !== null) {
       const safeData: Record<string, unknown> = {};
@@ -373,7 +377,7 @@ function safeSend(channel: string, data: unknown): void {
     const serialized = safeSerialize(data);
     mainWindow.webContents.send(channel, serialized);
   } catch (e) {
-    console.error('Error sending from webFrameMain: ', e);
+    log.error('Error sending from webFrameMain:', e);
   }
 }
 
@@ -416,16 +420,23 @@ function setupAgentEvents() {
 
 // Agent Task Execution
 ipcMain.handle('agent-execute-task', async (_event, task: string) => {
-  console.log(`[Agent] Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`);
+  log.info(`Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`);
   try {
     const agent = getAgent();
     const result = await agent.executeTask(task);
-    console.log(`[Agent] Task completed: success=${result.success}`);
+    if (result.success) {
+      log.info('Task completed successfully');
+    } else {
+      log.warn('Task failed:', result.error);
+      if (result.result) {
+        log.info('Task summary:', String(result.result).substring(0, 300));
+      }
+    }
     // Serialize result to avoid IPC cloning errors
     return safeSerialize(result);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[Agent] Task failed with error:`, errorMsg);
+    log.error('Task failed with error:', errorMsg);
     return { success: false, error: errorMsg };
   }
 });

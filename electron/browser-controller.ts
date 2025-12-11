@@ -38,9 +38,25 @@ export class BrowserController extends EventEmitter {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private cdpUrl: string = 'http://localhost:9222';
+  private connectionCheckInterval: NodeJS.Timeout | null = null;
+  private lastConnectionError: string | null = null;
 
   constructor() {
     super();
+  }
+
+  /**
+   * Get the last connection error (BC-06)
+   */
+  getLastConnectionError(): string | null {
+    return this.lastConnectionError;
+  }
+
+  /**
+   * Clear the last connection error
+   */
+  clearConnectionError(): void {
+    this.lastConnectionError = null;
   }
 
   /**
@@ -76,6 +92,12 @@ export class BrowserController extends EventEmitter {
 
       // Setup event listeners
       this.setupPageListeners();
+      
+      // Setup connection health check (BC-06)
+      this.startConnectionHealthCheck();
+      
+      // Clear any previous connection errors
+      this.lastConnectionError = null;
 
       console.log('Connected to browser successfully');
       this.emit('connected', { url: this.page.url() });
@@ -83,8 +105,57 @@ export class BrowserController extends EventEmitter {
       return { success: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.lastConnectionError = errorMessage;
       console.error('Failed to connect to browser:', errorMessage);
+      this.emit('connectionError', { error: errorMessage, canRetry: true });
       return { success: false, error: errorMessage };
+    }
+  }
+  
+  /**
+   * Start connection health check interval (BC-06)
+   */
+  private startConnectionHealthCheck(): void {
+    // Stop any existing interval
+    this.stopConnectionHealthCheck();
+    
+    // Check connection every 5 seconds
+    this.connectionCheckInterval = setInterval(async () => {
+      if (!this.browser || !this.page) return;
+      
+      try {
+        // Try to get page URL to verify connection is alive
+        await this.page.evaluate(() => document.readyState);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Connection lost';
+        console.error('Connection health check failed:', errorMessage);
+        this.lastConnectionError = errorMessage;
+        
+        // Emit disconnected event with error info
+        this.emit('connectionLost', { 
+          error: errorMessage,
+          canReconnect: true,
+          cdpUrl: this.cdpUrl
+        });
+        
+        // Clean up
+        this.browser = null;
+        this.context = null;
+        this.page = null;
+        this.stopConnectionHealthCheck();
+        
+        this.emit('disconnected', { reason: 'connection_lost', error: errorMessage });
+      }
+    }, 5000);
+  }
+  
+  /**
+   * Stop connection health check interval
+   */
+  private stopConnectionHealthCheck(): void {
+    if (this.connectionCheckInterval) {
+      clearInterval(this.connectionCheckInterval);
+      this.connectionCheckInterval = null;
     }
   }
 
@@ -92,14 +163,42 @@ export class BrowserController extends EventEmitter {
    * Disconnect from browser
    */
   async disconnect(): Promise<void> {
+    // Stop health check
+    this.stopConnectionHealthCheck();
+    
     if (this.browser) {
       // Don't close the browser, just disconnect
       this.browser = null;
       this.context = null;
       this.page = null;
-      this.emit('disconnected');
+      this.emit('disconnected', { reason: 'user_disconnect' });
       console.log('Disconnected from browser');
     }
+  }
+  
+  /**
+   * Reconnect to browser (BC-06)
+   * Attempts to reconnect using the last known CDP URL
+   */
+  async reconnect(): Promise<OperationResult> {
+    console.log(`Attempting to reconnect to ${this.cdpUrl}...`);
+    this.emit('reconnecting', { cdpUrl: this.cdpUrl });
+    
+    // Clean up existing connection
+    this.stopConnectionHealthCheck();
+    this.browser = null;
+    this.context = null;
+    this.page = null;
+    
+    // Try to connect again
+    return this.connect(this.cdpUrl);
+  }
+  
+  /**
+   * Get the current CDP URL
+   */
+  getCdpUrl(): string {
+    return this.cdpUrl;
   }
 
   /**

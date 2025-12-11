@@ -239,14 +239,94 @@ export async function executeNavigate(args: Record<string, unknown>) {
 
 export async function executeClick(args: Record<string, unknown>) {
   const selector = args.selector as string;
-  return browserController.click(selector);
+  
+  // First try the standard browser controller click
+  const result = await browserController.click(selector);
+  
+  // If standard click fails, try CodeAct intelligent matching (BO-10)
+  if (!result.success && !selector.startsWith('#') && !selector.startsWith('[')) {
+    console.log(`[executeClick] Standard click failed, trying CodeAct for: ${selector}`);
+    
+    try {
+      // Use CodeAct to find best matching element
+      const findResult = await executeFindBestElement({ 
+        description: selector,
+        elementType: 'button'
+      });
+      
+      if (findResult.success && findResult.data) {
+        const matchData = findResult.data as { found?: boolean; selector?: string; element?: ElementInfo };
+        
+        if (matchData.found && matchData.selector) {
+          console.log(`[executeClick] CodeAct found match: ${matchData.selector}`);
+          // Try clicking the found element
+          const codeActResult = await browserController.click(matchData.selector);
+          if (codeActResult.success) {
+            return { 
+              ...codeActResult, 
+              data: { 
+                ...codeActResult.data as object,
+                usedCodeAct: true,
+                originalSelector: selector,
+                matchedSelector: matchData.selector
+              }
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[executeClick] CodeAct fallback failed:', e);
+    }
+  }
+  
+  return result;
 }
 
 export async function executeType(args: Record<string, unknown>) {
   const selector = args.selector as string;
   const text = args.text as string;
   const clear = args.clear !== false;
-  return browserController.type(selector, text, clear);
+  
+  // First try the standard browser controller type
+  const result = await browserController.type(selector, text, clear);
+  
+  // If standard type fails, try CodeAct intelligent matching (BO-10)
+  if (!result.success && !selector.startsWith('#') && !selector.startsWith('[')) {
+    console.log(`[executeType] Standard type failed, trying CodeAct for: ${selector}`);
+    
+    try {
+      // Use CodeAct to find best matching input element
+      const findResult = await executeFindBestElement({ 
+        description: selector,
+        elementType: 'input'
+      });
+      
+      if (findResult.success && findResult.data) {
+        const matchData = findResult.data as { found?: boolean; selector?: string; element?: ElementInfo };
+        
+        if (matchData.found && matchData.selector) {
+          console.log(`[executeType] CodeAct found match: ${matchData.selector}`);
+          // Try typing in the found element
+          const codeActResult = await browserController.type(matchData.selector, text, clear);
+          if (codeActResult.success) {
+            return { 
+              ...codeActResult, 
+              data: { 
+                ...codeActResult.data as object,
+                usedCodeAct: true,
+                originalSelector: selector,
+                matchedSelector: matchData.selector
+              }
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[executeType] CodeAct fallback failed:', e);
+    }
+  }
+  
+  return result;
 }
 
 export async function executePress(args: Record<string, unknown>) {

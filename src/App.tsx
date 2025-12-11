@@ -3,7 +3,9 @@ import ChatPanel from './components/ChatPanel'
 import OperationPreview from './components/OperationPreview'
 import SettingsPanel from './components/SettingsPanel'
 import { SessionPanel } from './components/SessionPanel'
+import { ConfirmationDialog } from './components/ConfirmationDialog'
 import { useReActAgent } from './hooks/useReActAgent'
+import type { ConfirmationRequest } from '../electron/agent/safety/types'
 
 interface TabInfo {
   index: number;
@@ -50,6 +52,7 @@ function App() {
   const [loadingTabs, setLoadingTabs] = useState(false)
   const [tabsFetched, setTabsFetched] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   // Close dropdown when clicking outside
@@ -132,6 +135,34 @@ function App() {
 
   const handleCloseExport = useCallback(() => {
     setExportedScript(null)
+  }, [])
+
+  // Handle confirmation dialog
+  const handleConfirmAction = useCallback((confirmed: boolean, comment?: string) => {
+    if (window.electronAPI?.agent?.confirmAction) {
+      window.electronAPI.agent.confirmAction(confirmed, comment)
+    }
+    setPendingConfirmation(null)
+  }, [])
+
+  const handleCancelConfirmation = useCallback(() => {
+    if (window.electronAPI?.agent?.cancelConfirmation) {
+      window.electronAPI.agent.cancelConfirmation()
+    }
+    setPendingConfirmation(null)
+  }, [])
+
+  // Listen for confirmation requests
+  useEffect(() => {
+    if (!window.electronAPI?.agent?.onConfirmationRequested) return
+
+    const unsubscribe = window.electronAPI.agent.onConfirmationRequested((request: ConfirmationRequest) => {
+      setPendingConfirmation(request)
+    })
+
+    return () => {
+      unsubscribe?.()
+    }
   }, [])
 
   return (
@@ -319,6 +350,13 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Confirmation Dialog (HI-20 ~ HI-23) */}
+      <ConfirmationDialog
+        request={pendingConfirmation}
+        onConfirm={handleConfirmAction}
+        onCancel={handleCancelConfirmation}
+      />
     </div>
   )
 }
