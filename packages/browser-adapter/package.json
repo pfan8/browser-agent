@@ -1,0 +1,21 @@
+{
+  "name": "@chat-agent/browser-adapter",
+  "version": "1.0.0",
+  "description": "Browser control adapter using Playwright CDP",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:debug": "node --inspect-brk ../../node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts --no-file-parallelism"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
+  }
+}
