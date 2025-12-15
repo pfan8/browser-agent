@@ -17,18 +17,20 @@
     "test:e2e:fast": "tsx scripts/run-e2e-with-debug.ts --fast",
     "test:e2e:ui": "playwright test --ui",
     "verify:prd": "tsx scripts/verify-prd.ts",
-    "test:all": "pnpm test && pnpm test:e2e"
+    "test:all": "pnpm test && pnpm test:e2e",
+    "acceptance": "tsx scripts/acceptance-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
+    "@chat-agent/browser-adapter": "workspace:*",
+    "@chat-agent/agent-core": "workspace:*",
     "cheerio": "^1.0.0",
     "lodash": "^4.17.21",
     "playwright": "1.56.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "10.1.0",
-    "uuid": "^11.0.3",
-    "vm2": "^3.9.19"
+    "uuid": "^11.0.3"
   },
   "devDependencies": {
     "@playwright/test": "1.57.0",
