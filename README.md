@@ -4,11 +4,88 @@ Interactive chat agent desktop application for browser automation with operation
 
 ## Features
 
-- **Chat Interface**: Control your browser through natural language or predefined commands
+- **Chat Interface**: Control your browser through natural language
 - **CDP Connection**: Connect to any Chrome/Edge browser via Chrome DevTools Protocol
+- **LangGraph Agent**: AI-powered browser automation using LangGraph ReAct pattern
 - **Operation Recording**: All browser operations are recorded as a custom DSL
 - **Script Generation**: Export recorded operations as Playwright test scripts
-- **LLM Integration**: Optional Claude API integration for natural language understanding
+- **LLM Integration**: Claude API integration for intelligent task planning
+
+## Architecture Overview
+
+The project uses a **technical layering architecture** that separates concerns and enables independent testing:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              Electron Integration Layer                  │
+│   - electron/main.ts (IPC handlers, app lifecycle)      │
+│   - electron/preload.ts (secure API bridge)             │
+│   - src/ (React UI components)                          │
+└─────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────┐
+│              Agent Layer (LangGraph)                     │
+│   packages/agent-core/                                   │
+│   - StateGraph with ReAct pattern                       │
+│   - observe → think → act → observe loop                │
+│   - LangGraph MemorySaver for checkpoints               │
+│   - Can be tested in pure Node.js (no Electron)         │
+└─────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────┐
+│              Browser Adapter Layer                       │
+│   packages/browser-adapter/                              │
+│   - IBrowserAdapter interface                           │
+│   - PlaywrightAdapter implementation                    │
+│   - Can be tested with Chrome CDP (no Electron)         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Package Structure
+
+```
+chat-agent/
+├── packages/
+│   ├── browser-adapter/     # Standalone browser control
+│   │   ├── src/
+│   │   │   ├── types.ts              # IBrowserAdapter interface
+│   │   │   ├── playwright-adapter.ts # Playwright CDP implementation
+│   │   │   └── index.ts
+│   │   └── __tests__/
+│   │
+│   └── agent-core/          # LangGraph agent
+│       ├── src/
+│       │   ├── state.ts              # Agent state annotation
+│       │   ├── graph.ts              # StateGraph & BrowserAgent class
+│       │   ├── nodes/                # observe, think, act nodes
+│       │   ├── tools/                # LangGraph tools
+│       │   ├── checkpointer.ts       # Persistence config
+│       │   └── index.ts
+│       └── __tests__/
+│
+├── electron/                # Electron integration
+│   ├── main.ts              # App entry, IPC handlers
+│   ├── preload.ts           # Secure API bridge
+│   ├── operation-recorder.ts
+│   ├── script-generator.ts
+│   ├── settings-store.ts
+│   └── utils/
+│
+├── src/                     # React renderer
+│   ├── components/          # UI components
+│   ├── hooks/               # React hooks (useReActAgent)
+│   └── styles/
+│
+├── dsl/                     # DSL type definitions
+└── recordings/              # Saved recordings & screenshots
+```
+
+## Key Design Principles
+
+1. **Dependency Inversion**: Agent depends on `IBrowserAdapter` interface, not concrete implementation
+2. **Testability**: Core packages can be tested without Electron environment
+3. **Separation of Concerns**: Each layer has a single responsibility
+4. **Delayed Electron Integration**: Electron-specific code is only in `electron/` directory
 
 ## Prerequisites
 
@@ -23,9 +100,14 @@ Interactive chat agent desktop application for browser automation with operation
 pnpm install
 ```
 
-### 2. Start Chrome with Debug Mode
+### 2. Build Packages
 
-Start Chrome/Edge with remote debugging enabled:
+```bash
+cd packages/browser-adapter && pnpm build
+cd ../agent-core && pnpm build
+```
+
+### 3. Start Chrome with Debug Mode
 
 ```bash
 # macOS Chrome
@@ -33,16 +115,13 @@ Start Chrome/Edge with remote debugging enabled:
 
 # macOS Edge  
 /Applications/Microsoft\ Edge.app/Contents/MacOS/Microsoft\ Edge --remote-debugging-port=9222
-
-# Or use the existing script from parent directory
-../start-chrome-debug.sh
 ```
 
-### 3. Run the App
+### 4. Run the App
 
 Development mode:
 ```bash
-pnpm electron:dev
+pnpm dev
 ```
 
 Build for production:
@@ -50,30 +129,54 @@ Build for production:
 pnpm build
 ```
 
-## Commands
+## Testing
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `connect [url]` | Connect to browser via CDP | `connect http://localhost:9222` |
-| `disconnect` | Disconnect from browser | `disconnect` |
-| `goto <url>` | Navigate to URL | `goto https://google.com` |
-| `click <selector>` | Click an element | `click #submit-btn` |
-| `type <selector> <text>` | Type into an input | `type #search "hello world"` |
-| `screenshot [name]` | Take a screenshot | `screenshot my-page` |
-| `wait <ms>` | Wait for milliseconds | `wait 2000` |
-| `export` | Generate Playwright script | `export` |
-| `clear` | Clear recorded operations | `clear` |
-| `status` | Show current status | `status` |
-| `help` | Show help message | `help` |
+### Unit Tests (No Browser Required)
+```bash
+# Browser adapter tests
+cd packages/browser-adapter && pnpm test
 
-## Natural Language Support
+# Agent core tests (uses mock adapter)
+cd packages/agent-core && pnpm test
+```
 
-With an Anthropic API key configured, you can use natural language commands:
+### Integration Tests (Requires Chrome CDP)
+```bash
+# Start Chrome with --remote-debugging-port=9222 first
+pnpm test
+```
 
-- "Click the login button"
-- "Fill in the email field with test@example.com"
-- "Wait for the page to load"
-- "Take a screenshot of the homepage"
+### E2E Tests (Full Electron App)
+```bash
+pnpm test:e2e
+```
+
+## Agent Development
+
+The agent uses LangGraph's ReAct pattern:
+
+1. **Observe**: Capture current browser state (URL, title, page content)
+2. **Think**: LLM decides next action based on goal and observation
+3. **Act**: Execute the decided tool (navigate, click, type, etc.)
+4. **Loop**: Return to observe until goal is complete or max iterations reached
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `navigate` | Navigate to a URL |
+| `click` | Click on an element |
+| `type` | Type text into an input |
+| `press` | Press a keyboard key |
+| `hover` | Hover over an element |
+| `select` | Select dropdown option |
+| `wait` | Wait for duration |
+| `waitForSelector` | Wait for element |
+| `screenshot` | Take a screenshot |
+| `getPageInfo` | Get current page info |
+| `listPages` | List open tabs |
+| `switchToPage` | Switch to a tab |
+| `runCode` | Execute custom Playwright code |
 
 ## DSL Format
 
@@ -97,26 +200,6 @@ Operations are recorded in a JSON-based DSL format:
 }
 ```
 
-## Architecture
-
-```
-chat-agent/
-├── electron/           # Electron main process
-│   ├── main.ts         # App entry point
-│   ├── preload.ts      # IPC bridge
-│   ├── browser-controller.ts  # Playwright CDP
-│   ├── operation-recorder.ts  # DSL recording
-│   ├── llm-service.ts  # LLM integration
-│   └── script-generator.ts    # Playwright codegen
-├── src/                # React renderer
-│   ├── components/     # UI components
-│   ├── hooks/          # React hooks
-│   └── styles/         # CSS styles
-├── dsl/                # DSL type definitions
-└── recordings/         # Saved recordings
-```
-
 ## License
 
 MIT
-

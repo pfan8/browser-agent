@@ -19,7 +19,19 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['playwright', '@anthropic-ai/sdk', 'vm2']
+              // External packages that should be loaded at runtime, not bundled
+              external: [
+                'electron',
+                'playwright', 
+                '@anthropic-ai/sdk',
+                '@langchain/langgraph',
+                '@langchain/anthropic',
+                '@langchain/core',
+                'zod',
+                // Workspace packages - let node resolve them
+                '@chat-agent/browser-adapter',
+                '@chat-agent/agent-core'
+              ]
             }
           }
         }

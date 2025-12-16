@@ -867,6 +867,9 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
 
   /**
    * Execute arbitrary Playwright code
+   * 
+   * The code can access: page, context, browser
+   * Returns the result of the code execution in data field
    */
   async runCode(code: string): Promise<OperationResult> {
     if (!this.page) {
@@ -876,17 +879,28 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
     try {
       console.log('[BrowserAdapter] Executing code:', code);
       
+      // Check if code contains explicit return statement
+      const hasReturn = /\breturn\s/.test(code);
+      // Check if code is a single expression (no semicolons except at end, no newlines with statements)
+      const isSingleExpression = !hasReturn && !/;\s*\S/.test(code.trim());
+      
+      // Wrap code appropriately:
+      // - Single expression: add return to get the value
+      // - Multi-statement with return: use as-is
+      // - Multi-statement without return: execute and return undefined
+      let wrappedCode = code;
+      if (isSingleExpression) {
+        // Single expression - return its value
+        wrappedCode = `return ${code.trim().replace(/;$/, '')}`;
+      }
+      
       const asyncFunction = new Function('page', 'context', 'browser', `
         return (async () => {
-          try {
-            ${code}
-          } catch (e) {
-            throw e;
-          }
+          ${wrappedCode}
         })();
       `);
 
-      await asyncFunction(this.page, this.context, this.browser);
+      const result = await asyncFunction(this.page, this.context, this.browser);
 
       this.emit('operation', {
         id: genOpId(),
@@ -895,7 +909,7 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         timestamp: new Date().toISOString()
       });
 
-      return { success: true };
+      return { success: true, data: result };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Code execution failed';
       console.error('[BrowserAdapter] Code execution error:', error);

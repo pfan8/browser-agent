@@ -10,7 +10,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import type { Operation, ChatMessage } from '@dsl/types';
+import type { Operation, ChatMessage, ExecutionStep } from '@dsl/types';
 
 // ============================================
 // Types
@@ -170,6 +170,10 @@ export function useReActAgent(): ReActAgentHookReturn {
   // API availability
   const hasElectronAPI = typeof window !== 'undefined' && window.electronAPI;
   const hasAgentAPI = hasElectronAPI && window.electronAPI?.agent;
+  
+  // Track current task message for execution steps
+  const currentTaskMsgRef = useRef<string | null>(null);
+  const executionStepsRef = useRef<ExecutionStep[]>([]);
 
   // ============================================
   // Message Helpers
@@ -202,6 +206,36 @@ export function useReActAgent(): ReActAgentHookReturn {
   const updateMessage = useCallback((id: string, updates: Partial<AgentChatMessage>) => {
     setMessages(prev => prev.map(msg => 
       msg.id === id ? { ...msg, ...updates } : msg
+    ));
+  }, []);
+
+  // Add or update an execution step
+  const addExecutionStep = useCallback((step: ExecutionStep) => {
+    const msgId = currentTaskMsgRef.current;
+    if (!msgId) return;
+    
+    executionStepsRef.current = [...executionStepsRef.current, step];
+    
+    setMessages(prev => prev.map(msg => 
+      msg.id === msgId 
+        ? { ...msg, executionSteps: [...executionStepsRef.current] }
+        : msg
+    ));
+  }, []);
+
+  // Update an existing execution step
+  const updateExecutionStep = useCallback((stepId: string, updates: Partial<ExecutionStep>) => {
+    const msgId = currentTaskMsgRef.current;
+    if (!msgId) return;
+    
+    executionStepsRef.current = executionStepsRef.current.map(step =>
+      step.id === stepId ? { ...step, ...updates } : step
+    );
+    
+    setMessages(prev => prev.map(msg => 
+      msg.id === msgId 
+        ? { ...msg, executionSteps: [...executionStepsRef.current] }
+        : msg
     ));
   }, []);
 
@@ -387,7 +421,10 @@ export function useReActAgent(): ReActAgentHookReturn {
       return;
     }
 
+    // Reset execution steps tracking
+    executionStepsRef.current = [];
     const msgId = addMessage('agent', '🔄 正在分析任务...', 'processing', undefined, undefined, undefined, 'task').id;
+    currentTaskMsgRef.current = msgId;
     setIsRunning(true);
     
     try {
@@ -402,6 +439,7 @@ export function useReActAgent(): ReActAgentHookReturn {
           content: successContent,
           status: 'success',
           plan: result.plan,
+          executionSteps: [...executionStepsRef.current],
         });
       } else {
         // Show full failure summary if available, otherwise show error
@@ -412,6 +450,7 @@ export function useReActAgent(): ReActAgentHookReturn {
           content: failureContent,
           status: 'error',
           error: result.error,
+          executionSteps: [...executionStepsRef.current],
         });
       }
       
@@ -420,9 +459,11 @@ export function useReActAgent(): ReActAgentHookReturn {
       updateMessage(msgId, {
         content: `✗ 错误: ${e instanceof Error ? e.message : 'Unknown error'}`,
         status: 'error',
+        executionSteps: [...executionStepsRef.current],
       });
     } finally {
       setIsRunning(false);
+      currentTaskMsgRef.current = null;
     }
   }, [hasAgentAPI, addMessage, updateMessage, refreshStatus]);
 
@@ -642,21 +683,40 @@ export function useReActAgent(): ReActAgentHookReturn {
       setIsConnected(status.connected);
     });
 
+    // Listen for browser status changes (from auto-connect)
+    let unsubscribeStatus: (() => void) | undefined;
+    if (window.electronAPI.onBrowserStatusChanged) {
+      unsubscribeStatus = window.electronAPI.onBrowserStatusChanged((status) => {
+        setIsConnected(status.connected);
+        if (status.connected) {
+          // Refresh page info when connected
+          window.electronAPI.getPageInfo().then(info => {
+            setCurrentPageInfo(info);
+          }).catch(() => {});
+        }
+      });
+    }
+
     // Cleanup: remove event listener when effect re-runs or component unmounts
     return () => {
       unsubscribe();
+      unsubscribeStatus?.();
     };
   }, [hasElectronAPI]);
 
   // Agent event subscriptions - using refs to avoid re-subscribing when callbacks change
   const addMessageRef = useRef(addMessage);
   const refreshStatusRef = useRef(refreshStatus);
+  const addExecutionStepRef = useRef(addExecutionStep);
+  const updateExecutionStepRef = useRef(updateExecutionStep);
   
   // Keep refs updated
   useEffect(() => {
     addMessageRef.current = addMessage;
     refreshStatusRef.current = refreshStatus;
-  }, [addMessage, refreshStatus]);
+    addExecutionStepRef.current = addExecutionStep;
+    updateExecutionStepRef.current = updateExecutionStep;
+  }, [addMessage, refreshStatus, addExecutionStep, updateExecutionStep]);
 
   useEffect(() => {
     if (!hasAgentAPI) return;
@@ -678,9 +738,25 @@ export function useReActAgent(): ReActAgentHookReturn {
 
     unsubscribers.push(
       window.electronAPI.agent.onStepStarted((data: unknown) => {
-        const stepData = data as { step?: { description?: string } } | undefined;
-        if (stepData?.step?.description) {
-          addMessageRef.current('system', `▶️ ${stepData.step.description}`, 'processing');
+        const stepData = data as { 
+          step?: { id?: string; description?: string; tool?: string };
+          node?: string;
+        } | undefined;
+        
+        if (stepData?.step) {
+          const stepType = stepData.node === 'think' ? 'think' : 
+                          stepData.node === 'observe' ? 'observe' : 'act';
+          
+          const step: ExecutionStep = {
+            id: stepData.step.id || uuidv4(),
+            type: stepType,
+            timestamp: new Date().toISOString(),
+            content: stepData.step.description || `执行 ${stepData.step.tool || stepType}`,
+            tool: stepData.step.tool,
+            status: 'running',
+          };
+          
+          addExecutionStepRef.current(step);
         }
         refreshStatusRef.current();
       })
@@ -688,19 +764,15 @@ export function useReActAgent(): ReActAgentHookReturn {
 
     unsubscribers.push(
       window.electronAPI.agent.onStepCompleted((data: unknown) => {
-        const stepData = data as { step?: { description?: string } } | undefined;
-        if (stepData?.step?.description) {
-          // Update last message status instead of adding new message
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg && lastMsg.role === 'system' && lastMsg.status === 'processing') {
-              return prev.slice(0, -1).concat({
-                ...lastMsg,
-                content: `✓ ${stepData.step?.description}`,
-                status: 'success'
-              });
-            }
-            return prev;
+        const stepData = data as { 
+          step?: { id?: string; description?: string };
+          duration?: number;
+        } | undefined;
+        
+        if (stepData?.step?.id) {
+          updateExecutionStepRef.current(stepData.step.id, {
+            status: 'success',
+            duration: stepData.duration,
           });
         }
         refreshStatusRef.current();
@@ -710,28 +782,22 @@ export function useReActAgent(): ReActAgentHookReturn {
     unsubscribers.push(
       window.electronAPI.agent.onStepFailed((data: unknown) => {
         const stepData = data as { 
-          step?: { description?: string; tool?: string }; 
+          step?: { id?: string; description?: string; tool?: string }; 
           error?: string;
           action?: { tool?: string; result?: { error?: string } };
+          duration?: number;
         } | undefined;
         
         // Build detailed error message
-        const tool = stepData?.action?.tool || stepData?.step?.tool || 'unknown';
         const errorMsg = stepData?.action?.result?.error || stepData?.error || 'Unknown error';
-        const description = stepData?.step?.description || tool;
         
-        // Update last message status instead of adding new message
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg && lastMsg.role === 'system' && lastMsg.status === 'processing') {
-            return prev.slice(0, -1).concat({
-              ...lastMsg,
-              content: `✗ ${description}\n⚠️ 错误: ${errorMsg}`,
-              status: 'error'
-            });
-          }
-          return prev;
-        });
+        if (stepData?.step?.id) {
+          updateExecutionStepRef.current(stepData.step.id, {
+            status: 'error',
+            error: errorMsg,
+            duration: stepData.duration,
+          });
+        }
         
         refreshStatusRef.current();
       })

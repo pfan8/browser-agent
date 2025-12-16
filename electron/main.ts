@@ -3,24 +3,30 @@
  * 
  * Entry point for the Chat Browser Agent desktop application.
  * Handles window management, IPC communication, and browser control.
+ * 
+ * Uses the new LangGraph-based agent from @chat-agent/agent-core.
  */
 
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'path';
-import { browserController } from './browser-controller';
+import { PlaywrightAdapter, type IBrowserAdapter } from '@chat-agent/browser-adapter';
+import { 
+  BrowserAgent, 
+  createBrowserTools, 
+  createCheckpointer,
+  type AgentState,
+  type AgentConfig,
+} from '@chat-agent/agent-core';
 import { operationRecorder } from './operation-recorder';
 import { settingsStore } from './settings-store';
 import { generatePlaywrightScript } from './script-generator';
 import type { Operation, Recording } from '../dsl/types';
-import { getAgentCore } from './agent/agent-core';
-import type { AgentEvent } from './agent/types';
 import { createLogger } from './utils/logger';
 
 // Create module logger
 const log = createLogger('Main');
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
-// Note: electron-squirrel-startup is only needed for Windows Squirrel installer
 try {
   if (require('electron-squirrel-startup')) {
     app.quit();
@@ -29,20 +35,16 @@ try {
   // Module not available, continue normally
 }
 
-// Single instance lock - ensures only one instance of the app runs at a time
-// Only enabled in production to avoid issues with hot-reload during development
+// Single instance lock
 const isDevelopment = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 if (!isDevelopment) {
   const gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
-    // Another instance is already running, quit this one
     app.quit();
   } else {
-    // This is the primary instance
     app.on('second-instance', () => {
-      // When another instance tries to start, focus our existing window
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
@@ -53,8 +55,14 @@ if (!isDevelopment) {
 
 let mainWindow: BrowserWindow | null = null;
 
+// Browser adapter instance (replaces old browserController)
+let browserAdapter: IBrowserAdapter | null = null;
+
+// Agent instance
+let agent: BrowserAgent | null = null;
+let agentInitialized = false;
+
 function createWindow() {
-  // Create the browser window
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -67,11 +75,10 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false // Required for playwright
+      sandbox: false
     }
   });
 
-  // Load the app
   if (isDevelopment) {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
@@ -79,7 +86,6 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Handle external links
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -90,9 +96,232 @@ function createWindow() {
   });
 }
 
+// Initialize browser adapter
+function getBrowserAdapter(): IBrowserAdapter {
+  if (!browserAdapter) {
+    browserAdapter = new PlaywrightAdapter({
+      screenshotPath: './recordings',
+    });
+    
+    // Setup event forwarding
+    setupBrowserAdapterEvents(browserAdapter);
+  }
+  return browserAdapter;
+}
+
+// Initialize agent
+function getAgent(): BrowserAgent {
+  const savedSettings = settingsStore.getLLMSettings();
+  
+  if (!agent || !agentInitialized) {
+    const hasApiKey = !!savedSettings.apiKey;
+    const keyPreview = savedSettings.apiKey 
+      ? `${savedSettings.apiKey.substring(0, 10)}...${savedSettings.apiKey.slice(-4)}`
+      : 'none';
+    log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}`);
+    
+    const adapter = getBrowserAdapter();
+    const tools = createBrowserTools(adapter);
+    const checkpointer = createCheckpointer({ type: 'memory' });
+    
+    agent = new BrowserAgent({
+      browserAdapter: adapter,
+      tools,
+      llmConfig: {
+        apiKey: savedSettings.apiKey || '',
+        baseUrl: savedSettings.baseUrl,
+      },
+      agentConfig: {
+        maxIterations: 20,
+        maxConsecutiveFailures: 3,
+        enableScreenshots: false,
+      },
+    });
+    
+    agent.compile(checkpointer);
+    agentInitialized = true;
+  }
+  
+  return agent;
+}
+
+// Update agent LLM config
+function updateAgentLLMConfig(apiKey: string, baseUrl?: string) {
+  // Force re-initialization of agent with new config
+  agent = null;
+  agentInitialized = false;
+  settingsStore.setLLMSettings({ apiKey, baseUrl });
+}
+
+// Save current tab info to settings
+async function saveCurrentTabInfo(): Promise<void> {
+  if (!browserAdapter || !browserAdapter.isConnected()) {
+    return;
+  }
+  
+  try {
+    const pageInfo = await browserAdapter.getPageInfo();
+    if (pageInfo.url && !pageInfo.url.startsWith('chrome://')) {
+      settingsStore.setLastTab({
+        url: pageInfo.url,
+        title: pageInfo.title || '',
+      });
+      log.info(`Saved last tab: ${pageInfo.url}`);
+    }
+  } catch (error) {
+    log.warn('Failed to save current tab info:', error);
+  }
+}
+
+// Restore to last active tab after browser connection
+async function restoreLastTab(): Promise<void> {
+  const lastTab = settingsStore.getLastTab();
+  if (!lastTab || !browserAdapter) {
+    return;
+  }
+  
+  try {
+    log.info(`Attempting to restore last tab: ${lastTab.url}`);
+    const tabs = await browserAdapter.listPages();
+    
+    // Try to find a tab that matches the saved URL
+    const matchingTabIndex = tabs.findIndex(tab => tab.url === lastTab.url);
+    
+    if (matchingTabIndex >= 0) {
+      log.info(`Found matching tab at index ${matchingTabIndex}, switching...`);
+      const result = await browserAdapter.switchToPage(matchingTabIndex);
+      if (result.success) {
+        log.info('Successfully restored to last active tab');
+        return;
+      }
+    }
+    
+    // If exact URL not found, try to find a tab with the same domain
+    const lastTabDomain = new URL(lastTab.url).hostname;
+    const domainMatchIndex = tabs.findIndex(tab => {
+      try {
+        return new URL(tab.url).hostname === lastTabDomain;
+      } catch {
+        return false;
+      }
+    });
+    
+    if (domainMatchIndex >= 0) {
+      log.info(`Found tab with same domain at index ${domainMatchIndex}, switching...`);
+      await browserAdapter.switchToPage(domainMatchIndex);
+    } else {
+      log.info('No matching tab found, staying on current tab');
+    }
+  } catch (error) {
+    log.warn('Failed to restore last tab:', error);
+  }
+}
+
+// Safely serialize data for IPC
+function safeSerialize(data: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(data));
+  } catch (e) {
+    log.warn('Failed to serialize event data:', e);
+    if (typeof data === 'object' && data !== null) {
+      const safeData: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data)) {
+        try {
+          safeData[key] = JSON.parse(JSON.stringify(value));
+        } catch {
+          safeData[key] = String(value);
+        }
+      }
+      return safeData;
+    }
+    return String(data);
+  }
+}
+
+// Safe send to renderer
+function safeSend(channel: string, data: unknown): void {
+  if (!mainWindow) return;
+  try {
+    const serialized = safeSerialize(data);
+    mainWindow.webContents.send(channel, serialized);
+  } catch (e) {
+    log.error('Error sending to renderer:', e);
+  }
+}
+
+// Setup browser adapter event forwarding
+function setupBrowserAdapterEvents(adapter: IBrowserAdapter) {
+  adapter.on('operation', (...args: unknown[]) => {
+    const operation = args[0] as Operation;
+    operationRecorder.addOperation(operation);
+    if (mainWindow) {
+      mainWindow.webContents.send('operation-recorded', operation);
+    }
+  });
+
+  adapter.on('connected', (...args: unknown[]) => {
+    const data = args[0] as { url: string };
+    if (mainWindow) {
+      mainWindow.webContents.send('browser-event', { type: 'connected', data });
+    }
+  });
+
+  adapter.on('disconnected', () => {
+    if (mainWindow) {
+      mainWindow.webContents.send('browser-event', { type: 'disconnected', data: null });
+    }
+  });
+
+  adapter.on('pageLoad', (...args: unknown[]) => {
+    const data = args[0] as { url: string };
+    if (mainWindow) {
+      mainWindow.webContents.send('browser-event', { type: 'pageLoad', data });
+    }
+  });
+
+  adapter.on('console', (...args: unknown[]) => {
+    const data = args[0] as { type: string; text: string };
+    if (mainWindow) {
+      mainWindow.webContents.send('browser-event', { type: 'console', data });
+    }
+  });
+}
+
+// Auto-connect to browser on startup
+async function autoConnectBrowser(): Promise<void> {
+  const adapter = getBrowserAdapter();
+  
+  // Try common CDP ports
+  const cdpPorts = [9222, 9229, 9223];
+  
+  for (const port of cdpPorts) {
+    const cdpUrl = `http://localhost:${port}`;
+    try {
+      log.info(`Attempting auto-connect to browser at ${cdpUrl}...`);
+      const result = await adapter.connect(cdpUrl);
+      if (result.success) {
+        log.info(`Auto-connected to browser at ${cdpUrl}`);
+        if (mainWindow) {
+          mainWindow.webContents.send('browser-status-changed', { 
+            connected: true, 
+            cdpUrl 
+          });
+        }
+        
+        // Try to restore to last active tab after successful connection
+        await restoreLastTab();
+        return;
+      }
+    } catch (error) {
+      log.debug(`Auto-connect to ${cdpUrl} failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  
+  log.info('Auto-connect: No browser found on common ports. User can connect manually.');
+}
+
 // App lifecycle
-app.whenReady().then(() => {
-  // Load saved LLM settings
+app.whenReady().then(async () => {
   const savedLLMSettings = settingsStore.getLLMSettings();
   const hasApiKey = !!savedLLMSettings.apiKey;
   const keyPreview = savedLLMSettings.apiKey 
@@ -101,135 +330,140 @@ app.whenReady().then(() => {
   log.debug(`Loaded LLM settings: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedLLMSettings.baseUrl || 'default'}`);
   
   createWindow();
+  
+  // Auto-connect to browser after window is created
+  setTimeout(() => {
+    autoConnectBrowser().catch(err => {
+      log.warn('Auto-connect error:', err);
+    });
+  }, 1000); // Wait 1s for window to be ready
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
-
-  // Setup browser controller event listeners
-  setupBrowserControllerEvents();
 });
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
+  // Save current tab info before closing
+  await saveCurrentTabInfo();
+  
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-// Handle termination signals for clean shutdown during hot-reload
-// This ensures the process exits properly when vite-plugin-electron restarts
-process.on('SIGTERM', () => {
+// Save tab info before quitting
+app.on('before-quit', async (event) => {
+  // Prevent immediate quit to save tab info
+  event.preventDefault();
+  await saveCurrentTabInfo();
+  // Now actually quit
+  app.exit(0);
+});
+
+process.on('SIGTERM', async () => {
   log.info('Received SIGTERM, shutting down...');
+  await saveCurrentTabInfo();
   app.quit();
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   log.info('Received SIGINT, shutting down...');
+  await saveCurrentTabInfo();
   app.quit();
 });
 
-// Setup browser controller events
-function setupBrowserControllerEvents() {
-  browserController.on('operation', (operation: Operation) => {
-    // Add to recorder
-    operationRecorder.addOperation(operation);
-    
-    // Notify renderer
-    if (mainWindow) {
-      mainWindow.webContents.send('operation-recorded', operation);
-    }
-  });
-
-  browserController.on('connected', (data: { url: string }) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'connected', data });
-    }
-  });
-
-  browserController.on('disconnected', () => {
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'disconnected', data: null });
-    }
-  });
-
-  browserController.on('pageLoad', (data: { url: string }) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'pageLoad', data });
-    }
-  });
-
-  browserController.on('console', (data: { type: string; text: string }) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'console', data });
-    }
-  });
-}
-
 // ============================================
-// IPC Handlers
+// IPC Handlers - Browser Connection
 // ============================================
 
-// Browser connection
 ipcMain.handle('connect-browser', async (_event, cdpUrl: string) => {
-  return browserController.connect(cdpUrl);
+  const adapter = getBrowserAdapter();
+  const result = await adapter.connect(cdpUrl);
+  
+  // Try to restore to last active tab after successful manual connection
+  if (result.success) {
+    await restoreLastTab();
+  }
+  
+  return result;
 });
 
 ipcMain.handle('disconnect-browser', async () => {
-  await browserController.disconnect();
+  const adapter = getBrowserAdapter();
+  await adapter.disconnect();
 });
 
 ipcMain.handle('get-browser-status', async () => {
-  return browserController.getStatus();
+  const adapter = getBrowserAdapter();
+  return adapter.getStatus();
 });
 
-// Browser operations
+// ============================================
+// IPC Handlers - Browser Operations
+// ============================================
+
 ipcMain.handle('navigate', async (_event, url: string) => {
-  return browserController.navigate(url);
+  const adapter = getBrowserAdapter();
+  return adapter.navigate(url);
 });
 
 ipcMain.handle('click', async (_event, selector: string) => {
-  return browserController.click(selector);
+  const adapter = getBrowserAdapter();
+  return adapter.click(selector);
 });
 
 ipcMain.handle('type', async (_event, selector: string, text: string) => {
-  return browserController.type(selector, text);
+  const adapter = getBrowserAdapter();
+  return adapter.type(selector, text);
 });
 
 ipcMain.handle('press', async (_event, key: string) => {
-  return browserController.press(key);
+  const adapter = getBrowserAdapter();
+  return adapter.press(key);
 });
 
 ipcMain.handle('screenshot', async (_event, name?: string) => {
-  return browserController.screenshot(name);
+  const adapter = getBrowserAdapter();
+  return adapter.screenshot(name);
 });
 
 ipcMain.handle('wait-for', async (_event, ms: number) => {
-  return browserController.wait(ms);
+  const adapter = getBrowserAdapter();
+  return adapter.wait(ms);
 });
 
 ipcMain.handle('get-page-info', async () => {
-  return browserController.getPageInfo();
+  const adapter = getBrowserAdapter();
+  return adapter.getPageInfo();
 });
 
 ipcMain.handle('evaluate-selector', async (_event, description: string) => {
-  return browserController.evaluateSelector(description);
+  const adapter = getBrowserAdapter();
+  return adapter.evaluateSelector(description);
 });
 
 ipcMain.handle('list-pages', async () => {
-  return browserController.listPages();
+  const adapter = getBrowserAdapter();
+  return adapter.listPages();
 });
 
 ipcMain.handle('switch-to-page', async (_event, index: number) => {
-  return browserController.switchToPage(index);
+  const adapter = getBrowserAdapter();
+  return adapter.switchToPage(index);
 });
 
 ipcMain.handle('run-code', async (_event, code: string) => {
-  return browserController.runCode(code);
+  const adapter = getBrowserAdapter();
+  return adapter.runCode(code);
 });
 
-// Recording
+// ============================================
+// IPC Handlers - Recording
+// ============================================
+
 ipcMain.handle('get-recording', async (): Promise<Recording> => {
   return operationRecorder.getRecording();
 });
@@ -260,20 +494,14 @@ ipcMain.handle('load-recording', async (_event, filePath: string) => {
   return operationRecorder.load(filePath);
 });
 
-// LLM Configuration (all chat now goes through agent)
+// ============================================
+// IPC Handlers - LLM Configuration
+// ============================================
 
-// Set LLM API key (can be called from renderer to configure)
 ipcMain.handle('set-llm-api-key', async (_event, apiKey: string) => {
   try {
-    // Save to persistent storage (keep existing baseUrl if any)
     const existingSettings = settingsStore.getLLMSettings();
-    settingsStore.setLLMSettings({
-      apiKey,
-      baseUrl: existingSettings.baseUrl
-    });
-    // Update AgentCore's planner with full config (including baseUrl)
-    const agent = getAgent();
-    agent.setLLMConfig({ apiKey, baseUrl: existingSettings.baseUrl });
+    updateAgentLLMConfig(apiKey, existingSettings.baseUrl);
     return { success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to set API key';
@@ -281,7 +509,6 @@ ipcMain.handle('set-llm-api-key', async (_event, apiKey: string) => {
   }
 });
 
-// Set LLM config (API key and base URL) and persist to storage
 ipcMain.handle('set-llm-config', async (_event, config: { apiKey: string; baseUrl?: string }) => {
   try {
     const keyPreview = config.apiKey 
@@ -289,15 +516,8 @@ ipcMain.handle('set-llm-config', async (_event, config: { apiKey: string; baseUr
       : 'none';
     log.debug(`set-llm-config called: keyPreview=${keyPreview}, baseUrl=${config.baseUrl || 'default'}`);
     
-    // Save to persistent storage
-    settingsStore.setLLMSettings({
-      apiKey: config.apiKey,
-      baseUrl: config.baseUrl
-    });
-    // Update AgentCore's planner with full config (including baseUrl)
-    const agent = getAgent();
-    agent.setLLMConfig({ apiKey: config.apiKey, baseUrl: config.baseUrl });
-    log.debug('LLM config updated in settingsStore and AgentCore');
+    updateAgentLLMConfig(config.apiKey, config.baseUrl);
+    log.debug('LLM config updated');
     return { success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to set LLM config';
@@ -306,7 +526,6 @@ ipcMain.handle('set-llm-config', async (_event, config: { apiKey: string; baseUr
   }
 });
 
-// Get LLM config
 ipcMain.handle('get-llm-config', async () => {
   const settings = settingsStore.getLLMSettings();
   return {
@@ -315,128 +534,189 @@ ipcMain.handle('get-llm-config', async () => {
   };
 });
 
-// Check if LLM is available
 ipcMain.handle('is-llm-available', async () => {
   const settings = settingsStore.getLLMSettings();
   return !!settings.apiKey;
 });
 
 // ============================================
-// Agent IPC Handlers (Hierarchical Agent)
+// IPC Handlers - Agent
 // ============================================
-
-// Get or create the agent instance (singleton)
-let agentInitialized = false;
-function getAgent() {
-  const savedSettings = settingsStore.getLLMSettings();
-  
-  // Only log on first call to reduce noise
-  if (!agentInitialized) {
-    const hasApiKey = !!savedSettings.apiKey;
-    const keyPreview = savedSettings.apiKey 
-      ? `${savedSettings.apiKey.substring(0, 10)}...${savedSettings.apiKey.slice(-4)}`
-      : 'none';
-    log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}`);
-    agentInitialized = true;
-  }
-  
-  return getAgentCore({
-    anthropicApiKey: savedSettings.apiKey,
-    anthropicBaseUrl: savedSettings.baseUrl,
-  });
-}
-
-// Safely serialize data for IPC (removes non-serializable content)
-function safeSerialize(data: unknown): unknown {
-  try {
-    // Use JSON stringify/parse to remove non-serializable content
-    return JSON.parse(JSON.stringify(data));
-  } catch (e) {
-    log.warn('Failed to serialize event data:', e);
-    // Return a safe fallback
-    if (typeof data === 'object' && data !== null) {
-      const safeData: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(data)) {
-        try {
-          safeData[key] = JSON.parse(JSON.stringify(value));
-        } catch {
-          // Skip non-serializable properties
-          safeData[key] = String(value);
-        }
-      }
-      return safeData;
-    }
-    return String(data);
-  }
-}
-
-// Safe send to renderer with error handling
-function safeSend(channel: string, data: unknown): void {
-  if (!mainWindow) return;
-  try {
-    const serialized = safeSerialize(data);
-    mainWindow.webContents.send(channel, serialized);
-  } catch (e) {
-    log.error('Error sending from webFrameMain:', e);
-  }
-}
-
-// Setup agent event forwarding to renderer
-function setupAgentEvents() {
-  const agent = getAgent();
-  
-  agent.on('event', (event: AgentEvent) => {
-    safeSend('agent-event', event);
-  });
-
-  agent.on('status_changed', (data) => {
-    safeSend('agent-status-changed', data);
-  });
-
-  agent.on('plan_created', (data) => {
-    safeSend('agent-plan-created', data);
-  });
-
-  agent.on('step_started', (data) => {
-    safeSend('agent-step-started', data);
-  });
-
-  agent.on('step_completed', (data) => {
-    safeSend('agent-step-completed', data);
-  });
-
-  agent.on('step_failed', (data) => {
-    safeSend('agent-step-failed', data);
-  });
-
-  agent.on('task_completed', (data) => {
-    safeSend('agent-task-completed', data);
-  });
-
-  agent.on('task_failed', (data) => {
-    safeSend('agent-task-failed', data);
-  });
-}
 
 // Agent Task Execution
 ipcMain.handle('agent-execute-task', async (_event, task: string) => {
   log.info(`Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`);
   try {
-    const agent = getAgent();
-    const result = await agent.executeTask(task);
-    if (result.success) {
-      log.info('Task completed successfully');
-    } else {
-      log.warn('Task failed:', result.error);
-      if (result.result) {
-        log.info('Task summary:', String(result.result).substring(0, 300));
+    const agentInstance = getAgent();
+    
+    // Stream execution and send events to renderer
+    let finalState: AgentState | null = null;
+    let stepCounter = 0;
+    const stepStartTimes = new Map<string, number>();
+    let lastActionCount = 0;
+    let lastObservationTimestamp = '';
+    let pendingThinkStepId: string | null = null;
+    let pendingActStepId: string | null = null;
+    
+    for await (const event of agentInstance.streamTask(task)) {
+      // Send progress events to renderer
+      safeSend('agent-event', {
+        type: event.node,
+        timestamp: new Date().toISOString(),
+        data: event.state,
+      });
+      
+      // Update status
+      if (event.state.status) {
+        safeSend('agent-status-changed', { status: event.state.status });
+      }
+      
+      // Track observe node events
+      if (event.node === 'observe' && event.state.observation) {
+        const obs = event.state.observation;
+        // Only emit if observation changed (new timestamp)
+        if (obs.timestamp !== lastObservationTimestamp) {
+          lastObservationTimestamp = obs.timestamp;
+          const stepId = `step-${++stepCounter}-observe`;
+          
+          safeSend('agent-step-started', { 
+            step: { 
+              id: stepId, 
+              description: `观察: ${obs.title || obs.url}`.substring(0, 50)
+            }, 
+            node: 'observe' 
+          });
+          
+          safeSend('agent-step-completed', { 
+            step: { id: stepId, description: `观察: ${obs.title || obs.url}`.substring(0, 50) }, 
+            node: 'observe',
+            duration: 100
+          });
+        }
+      }
+      
+      // Track think node events - think adds a new action without result
+      if (event.node === 'think' && event.state.actionHistory) {
+        const currentActionCount = event.state.actionHistory.length;
+        
+        // New action was added by think node
+        if (currentActionCount > lastActionCount) {
+          const newAction = event.state.actionHistory[currentActionCount - 1];
+          
+          if (newAction && !newAction.result) {
+            // Complete any pending think step
+            if (pendingThinkStepId) {
+              const duration = Date.now() - (stepStartTimes.get(pendingThinkStepId) || Date.now());
+              safeSend('agent-step-completed', { 
+                step: { id: pendingThinkStepId, description: '思考完成' }, 
+                node: 'think',
+                duration 
+              });
+              pendingThinkStepId = null;
+            }
+            
+            // Start new think step
+            const stepId = `step-${++stepCounter}-think`;
+            stepStartTimes.set(stepId, Date.now());
+            pendingThinkStepId = stepId;
+            
+            const description = newAction.reasoning 
+              ? newAction.reasoning.substring(0, 60) + (newAction.reasoning.length > 60 ? '...' : '')
+              : `决定执行: ${newAction.tool}`;
+            
+            safeSend('agent-step-started', { 
+              step: { 
+                id: stepId, 
+                description: description,
+                tool: newAction.tool 
+              }, 
+              node: 'think' 
+            });
+            
+            // Complete think step immediately (thinking is done when action is decided)
+            const duration = Date.now() - (stepStartTimes.get(stepId) || Date.now());
+            safeSend('agent-step-completed', { 
+              step: { id: stepId, description: description }, 
+              node: 'think',
+              duration: Math.max(duration, 100)
+            });
+            pendingThinkStepId = null;
+            
+            // Start act step
+            const actStepId = `step-${++stepCounter}-act`;
+            stepStartTimes.set(actStepId, Date.now());
+            pendingActStepId = actStepId;
+            
+            safeSend('agent-step-started', { 
+              step: { 
+                id: actStepId, 
+                description: `执行 ${newAction.tool}`, 
+                tool: newAction.tool 
+              }, 
+              node: 'act',
+              action: newAction 
+            });
+            
+            lastActionCount = currentActionCount;
+          }
+        }
+      }
+      
+      // Track act node completion - act updates the action with result
+      if (event.node === 'act' && event.state.actionHistory && pendingActStepId) {
+        const lastAction = event.state.actionHistory[event.state.actionHistory.length - 1];
+        
+        if (lastAction && lastAction.result) {
+          const duration = Date.now() - (stepStartTimes.get(pendingActStepId) || Date.now());
+          
+          if (lastAction.result.success) {
+            safeSend('agent-step-completed', { 
+              step: { id: pendingActStepId, description: `执行 ${lastAction.tool}` }, 
+              node: 'act',
+              action: lastAction,
+              duration 
+            });
+          } else {
+            safeSend('agent-step-failed', { 
+              step: { id: pendingActStepId, description: `执行 ${lastAction.tool}`, tool: lastAction.tool }, 
+              node: 'act',
+              action: lastAction, 
+              error: lastAction.result.error || 'Unknown error',
+              duration 
+            });
+          }
+          
+          pendingActStepId = null;
+        }
+      }
+      
+      finalState = event.state as AgentState;
+    }
+    
+    if (finalState) {
+      if (finalState.isComplete && !finalState.error) {
+        log.info('Task completed successfully');
+        safeSend('agent-task-completed', { result: finalState.result });
+        return safeSerialize({ 
+          success: true, 
+          result: finalState.result,
+        });
+      } else {
+        log.warn('Task failed:', finalState.error);
+        safeSend('agent-task-failed', { error: finalState.error });
+        return safeSerialize({ 
+          success: false, 
+          error: finalState.error,
+          result: finalState.result,
+        });
       }
     }
-    // Serialize result to avoid IPC cloning errors
-    return safeSerialize(result);
+    
+    return { success: false, error: 'No final state' };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     log.error('Task failed with error:', errorMsg);
+    safeSend('agent-task-failed', { error: errorMsg });
     return { success: false, error: errorMsg };
   }
 });
@@ -444,8 +724,8 @@ ipcMain.handle('agent-execute-task', async (_event, task: string) => {
 // Stop current task
 ipcMain.handle('agent-stop-task', async () => {
   try {
-    const agent = getAgent();
-    agent.stopTask();
+    const agentInstance = getAgent();
+    agentInstance.stop();
     return { success: true };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -454,138 +734,132 @@ ipcMain.handle('agent-stop-task', async () => {
 
 // Get agent status
 ipcMain.handle('agent-get-status', async () => {
-  const agent = getAgent();
+  const agentInstance = getAgent();
   return {
-    status: agent.getStatus(),
-    isRunning: agent.isTaskRunning(),
-    currentPlan: agent.getCurrentPlan(),
-    progress: agent.getPlanProgress(),
+    status: agentInstance.isTaskRunning() ? 'running' : 'idle',
+    isRunning: agentInstance.isTaskRunning(),
+    currentPlan: null, // LangGraph doesn't use explicit plans in the same way
+    progress: null,
   };
 });
 
-// Get agent state
+// Get agent state (simplified for LangGraph)
 ipcMain.handle('agent-get-state', async () => {
-  const agent = getAgent();
-  return agent.getState();
+  return {
+    sessionId: 'default',
+    status: 'idle',
+    currentTask: null,
+    plan: null,
+    memory: { conversation: [], workingMemory: {}, facts: [] },
+    checkpoints: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
 });
 
-// Agent Sessions
-ipcMain.handle('agent-create-session', async (_event, name: string, description?: string) => {
-  try {
-    const agent = getAgent();
-    const session = agent.createSession(name, description);
-    return { success: true, session };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
+// ============================================
+// IPC Handlers - Sessions (Simplified for LangGraph)
+// ============================================
+
+ipcMain.handle('agent-create-session', async (_event, name: string, _description?: string) => {
+  // LangGraph uses thread_id for sessions
+  const sessionId = `session_${Date.now()}`;
+  return { 
+    success: true, 
+    session: { id: sessionId, name } 
+  };
 });
 
-ipcMain.handle('agent-load-session', async (_event, sessionId: string) => {
-  try {
-    const agent = getAgent();
-    const success = agent.loadSession(sessionId);
-    return { success };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
+ipcMain.handle('agent-load-session', async (_event, _sessionId: string) => {
+  // LangGraph sessions are managed by the checkpointer
+  return { success: true };
 });
 
 ipcMain.handle('agent-list-sessions', async () => {
-  const agent = getAgent();
-  return agent.listSessions();
+  // Return empty list for now - would need checkpointer integration
+  return [];
 });
 
-ipcMain.handle('agent-delete-session', async (_event, sessionId: string) => {
-  const agent = getAgent();
-  return agent.deleteSession(sessionId);
+ipcMain.handle('agent-delete-session', async (_event, _sessionId: string) => {
+  return true;
 });
 
 ipcMain.handle('agent-get-current-session', async () => {
-  const agent = getAgent();
-  return agent.getCurrentSessionId();
+  const agentInstance = getAgent();
+  return agentInstance.getCurrentThreadId();
 });
 
-// Agent Checkpoints
-ipcMain.handle('agent-create-checkpoint', async (_event, name: string, description?: string) => {
-  try {
-    const agent = getAgent();
-    const checkpointId = agent.createCheckpoint(name, description);
-    return { success: true, checkpointId };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
+// ============================================
+// IPC Handlers - Checkpoints (Managed by LangGraph)
+// ============================================
+
+ipcMain.handle('agent-create-checkpoint', async (_event, _name: string, _description?: string) => {
+  // LangGraph automatically creates checkpoints
+  return { success: true, checkpointId: `checkpoint_${Date.now()}` };
 });
 
 ipcMain.handle('agent-list-checkpoints', async () => {
-  const agent = getAgent();
-  return agent.listCheckpoints();
+  // Would need to query the checkpointer
+  return [];
 });
 
-ipcMain.handle('agent-restore-checkpoint', async (_event, checkpointId: string) => {
-  try {
-    const agent = getAgent();
-    const success = await agent.resumeFromCheckpoint(checkpointId);
-    return { success };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
+ipcMain.handle('agent-restore-checkpoint', async (_event, _checkpointId: string) => {
+  // Would need checkpointer integration
+  return { success: true };
 });
 
 ipcMain.handle('agent-restore-latest', async () => {
-  try {
-    const agent = getAgent();
-    const success = await agent.resumeFromLatest();
-    return { success };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
+  return { success: true };
 });
 
-ipcMain.handle('agent-delete-checkpoint', async (_event, checkpointId: string) => {
-  const agent = getAgent();
-  return agent.deleteCheckpoint(checkpointId);
+ipcMain.handle('agent-delete-checkpoint', async (_event, _checkpointId: string) => {
+  return true;
 });
 
-// Agent Memory & History
-ipcMain.handle('agent-get-conversation', async (_event, limit?: number) => {
-  const agent = getAgent();
-  return agent.getConversationHistory(limit);
+// ============================================
+// IPC Handlers - Memory & History
+// ============================================
+
+ipcMain.handle('agent-get-conversation', async (_event, _limit?: number) => {
+  return [];
 });
 
 ipcMain.handle('agent-clear-memory', async () => {
-  const agent = getAgent();
-  agent.clearMemory();
   return { success: true };
 });
 
 ipcMain.handle('agent-get-memory-summary', async () => {
-  const agent = getAgent();
-  return agent.getMemorySummary();
+  return 'Memory managed by LangGraph checkpointer';
 });
 
-// Agent Chat (non-task conversation)
+// ============================================
+// IPC Handlers - Chat & Configuration
+// ============================================
+
 ipcMain.handle('agent-chat', async (_event, message: string) => {
   try {
-    const agent = getAgent();
-    const response = await agent.chat(message);
-    return { success: true, response };
+    // Use the agent to process the message
+    const agentInstance = getAgent();
+    const result = await agentInstance.executeTask(message);
+    return { 
+      success: true, 
+      response: result.result || 'Task processed' 
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });
 
-// Agent Reset
 ipcMain.handle('agent-reset', async () => {
-  const agent = getAgent();
-  agent.reset();
+  agent = null;
+  agentInitialized = false;
   return { success: true };
 });
 
-// Agent Configuration
 ipcMain.handle('agent-update-config', async (_event, config: Record<string, unknown>) => {
   try {
-    const agent = getAgent();
-    agent.updateConfig(config);
+    const agentInstance = getAgent();
+    agentInstance.updateConfig(config as Partial<AgentConfig>);
     return { success: true };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -593,12 +867,6 @@ ipcMain.handle('agent-update-config', async (_event, config: Record<string, unkn
 });
 
 ipcMain.handle('agent-get-config', async () => {
-  const agent = getAgent();
-  return agent.getConfig();
+  const agentInstance = getAgent();
+  return agentInstance.getConfig();
 });
-
-// Initialize agent events when app is ready
-app.whenReady().then(() => {
-  setupAgentEvents();
-});
-

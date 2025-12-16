@@ -1,0 +1,26 @@
+{
+  "name": "@chat-agent/agent-core",
+  "version": "1.0.0",
+  "description": "LangGraph-based browser automation agent",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:types": "node --max-old-space-size=8192 build.mjs --types",
+    "build:tsc": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^0.2.36",
+    "@langchain/anthropic": "^0.3.14",
+    "@langchain/core": "^0.3.27",
+    "@chat-agent/browser-adapter": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,226 @@
+# Chat Browser Agent Development Rules
+
+## ⚠️ Key Rules (Must Follow)
+
+**Every code change MUST adhere to the following rules:**
+
+1. **Single Function ≤ 100 Lines**
+
+   - Any single function should not exceed 100 lines of code
+   - If a function grows beyond this limit, refactor it into smaller, focused functions
+
+2. **Single File ≤ 800 Lines**
+
+   - Any single file should not exceed 800 lines of code
+   - If a file grows beyond this limit, split it into multiple files with clear responsibilities
+
+3. **SOLID Principles**
+   - **S**ingle Responsibility: Each class/module should have only one reason to change
+   - **O**pen/Closed: Open for extension, closed for modification
+   - **L**iskov Substitution: Subtypes must be substitutable for their base types
+   - **I**nterface Segregation: Prefer small, specific interfaces over large, general ones
+   - **D**ependency Inversion: Depend on abstractions, not concretions
+
+These rules are non-negotiable and must be verified before completing any code change.
+
+---
+
+## Architecture Principles
+
+This project uses a **technical layering architecture** with three distinct layers:
+
+1. **Browser Adapter Layer** (`packages/browser-adapter/`)
+
+   - Pure browser control, no AI logic
+   - Must implement `IBrowserAdapter` interface
+   - Testable with Chrome CDP, no Electron required
+
+2. **Agent Core Layer** (`packages/agent-core/`)
+
+   - LangGraph-based AI agent
+   - Depends on `IBrowserAdapter` interface (not concrete implementation)
+   - Testable with mock browser adapter, no real browser required
+
+3. **Electron Integration Layer** (`electron/`)
+   - Electron-specific code only
+   - IPC handlers, window management
+   - Integrates the two packages above
+
+## Development Guidelines
+
+### When Modifying Browser Adapter
+
+- All changes go in `packages/browser-adapter/`
+- Must maintain `IBrowserAdapter` interface compatibility
+- Add unit tests that can run without Electron
+- Test with: `cd packages/browser-adapter && pnpm test`
+
+### When Modifying Agent Logic
+
+- All changes go in `packages/agent-core/`
+- Use LangGraph patterns (StateGraph, Annotation, nodes)
+- Depend only on `IBrowserAdapter` interface, never on `PlaywrightAdapter` directly
+- Add unit tests using mock browser adapter
+- Test with: `cd packages/agent-core && pnpm test`
+
+### When Modifying Electron Integration
+
+- Changes go in `electron/` directory
+- Import from `@chat-agent/browser-adapter` and `@chat-agent/agent-core`
+- Do not add browser control or agent logic here
+
+## LangGraph Agent Structure
+
+The agent uses the ReAct (Reasoning + Acting) pattern:
+
+```typescript
+// State definition using LangGraph Annotation
+const AgentStateAnnotation = Annotation.Root({
+  messages: Annotation<BaseMessage[]>({ reducer: messagesStateReducer }),
+  goal: Annotation<string>(),
+  observation: Annotation<Observation | null>(),
+  actionHistory: Annotation<AgentAction[]>({ reducer: appendReducer }),
+  status: Annotation<AgentStatus>(),
+  iterationCount: Annotation<number>(),
+  // ...
+});
+
+// Graph structure
+const graph = new StateGraph(AgentStateAnnotation)
+  .addNode("observe", observeNode) // Capture browser state
+  .addNode("think", thinkNode) // LLM decides action
+  .addNode("act", actNode) // Execute action
+  .addEdge(START, "observe")
+  .addConditionalEdges("observe", routeAfterObserve)
+  .addConditionalEdges("think", routeAfterThink)
+  .addConditionalEdges("act", routeAfterAct);
+```
+
+### Adding New Tools
+
+1. Add tool in `packages/agent-core/src/tools/browser-tools.ts`:
+
+```typescript
+const newTool = tool(
+  async ({ param }) => {
+    const result = await browserAdapter.someMethod(param);
+    return JSON.stringify(result);
+  },
+  {
+    name: "toolName",
+    description: "What this tool does",
+    schema: z.object({
+      param: z.string().describe("Parameter description"),
+    }),
+  }
+);
+```
+
+2. Add corresponding method to `IBrowserAdapter` interface if needed
+3. Implement in `PlaywrightAdapter`
+4. Add tests for both
+
+### Adding New Nodes
+
+1. Create node in `packages/agent-core/src/nodes/`:
+
+```typescript
+export function createNewNode(browserAdapter: IBrowserAdapter) {
+  return async (state: AgentState): Promise<Partial<AgentState>> => {
+    // Node logic
+    return {
+      status: "new_status",
+      // other state updates
+    };
+  };
+}
+```
+
+2. Add to graph in `packages/agent-core/src/graph.ts`
+3. Add routing logic if needed
+
+## Testing Strategy
+
+| Layer           | Test Location                         | Test Method                         |
+| --------------- | ------------------------------------- | ----------------------------------- |
+| Browser Adapter | `packages/browser-adapter/__tests__/` | Mock Playwright, or real Chrome CDP |
+| Agent Core      | `packages/agent-core/__tests__/`      | Mock browser adapter                |
+| Electron        | `e2e/`                                | Full Playwright test with Electron  |
+
+## Key Files
+
+- `packages/browser-adapter/src/types.ts` - IBrowserAdapter interface
+- `packages/agent-core/src/state.ts` - Agent state types
+- `packages/agent-core/src/graph.ts` - Main graph & BrowserAgent class
+- `packages/agent-core/src/tools/browser-tools.ts` - LangGraph tools
+- `electron/main.ts` - Electron IPC handlers
+- `electron/preload.ts` - Secure API bridge
+
+## Build Commands
+
+```bash
+# Build packages (required before running app)
+cd packages/browser-adapter && pnpm build
+cd packages/agent-core && pnpm build
+
+# Run development
+pnpm dev
+
+# Run tests
+cd packages/browser-adapter && pnpm test
+cd packages/agent-core && pnpm test
+pnpm test:e2e
+```
+
+## Common Patterns
+
+### Using Browser Adapter
+
+```typescript
+// In agent code - depend on interface
+function createNode(browserAdapter: IBrowserAdapter) {
+  return async (state: AgentState) => {
+    const pageInfo = await browserAdapter.getPageInfo();
+    // ...
+  };
+}
+```
+
+### Executing Tasks
+
+```typescript
+// Create and compile agent
+const agent = new BrowserAgent({
+  browserAdapter,
+  tools: createBrowserTools(browserAdapter),
+  llmConfig: { apiKey, baseUrl },
+});
+agent.compile(checkpointer);
+
+// Execute task
+const result = await agent.executeTask(
+  "Navigate to google.com and search for 'test'"
+);
+
+// Or stream execution
+for await (const event of agent.streamTask(task)) {
+  console.log(event.node, event.state);
+}
+```
+
+## Do's and Don'ts
+
+### Do:
+
+- Keep browser control logic in browser-adapter package
+- Keep agent/LLM logic in agent-core package
+- Use dependency injection with IBrowserAdapter interface
+- Write tests that can run without Electron
+- Use LangGraph patterns for agent development
+
+### Don't:
+
+- Import Playwright directly in agent-core (use IBrowserAdapter)
+- Add agent logic in electron/ directory
+- Skip building packages before running the app
+- Modify state directly (use LangGraph reducers)

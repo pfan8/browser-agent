@@ -1,14 +1,81 @@
 /// <reference types="vite/client" />
 
-// Import agent types for type definitions
-type AgentTypes = typeof import('@electron/agent/types');
-type AgentStatus = AgentTypes['AgentStatus'] extends infer T ? T : never;
-type TaskPlan = import('@electron/agent/types').TaskPlan;
-type AgentState = import('@electron/agent/types').AgentState;
-type CheckpointInfo = import('@electron/agent/types').CheckpointInfo;
-type ConversationMessage = import('@electron/agent/types').ConversationMessage;
-type AgentConfig = import('@electron/agent/types').AgentConfig;
-type AgentEvent = import('@electron/agent/types').AgentEvent;
+// Local type definitions to avoid import issues
+type AgentStatus = 
+  | 'idle'
+  | 'observing'
+  | 'thinking'
+  | 'acting'
+  | 'complete'
+  | 'error'
+  | 'paused'
+  | 'running';
+
+interface TaskStep {
+  id: string;
+  description: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+  retryCount: number;
+}
+
+interface TaskPlan {
+  id: string;
+  goal: string;
+  steps: TaskStep[];
+  currentStepIndex: number;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ConversationMessage {
+  id: string;
+  role: 'user' | 'agent' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface CheckpointInfo {
+  id: string;
+  name: string;
+  description?: string;
+  stepIndex: number;
+  createdAt: string;
+  isAutoSave: boolean;
+}
+
+interface AgentConfig {
+  maxIterations: number;
+  maxConsecutiveFailures: number;
+  thinkTimeout: number;
+  actionTimeout: number;
+  enableScreenshots: boolean;
+  llmModel: string;
+}
+
+interface AgentEvent {
+  type: string;
+  timestamp: string;
+  data: unknown;
+}
+
+interface AgentState {
+  sessionId: string;
+  status: AgentStatus;
+  currentTask: string | null;
+  plan: TaskPlan | null;
+  memory: {
+    conversation: ConversationMessage[];
+    workingMemory: Record<string, unknown>;
+    facts: unknown[];
+  };
+  checkpoints: CheckpointInfo[];
+  createdAt: string;
+  updatedAt: string;
+}
 
 interface Window {
   electronAPI: {
@@ -53,11 +120,12 @@ interface Window {
     // Events - each returns an unsubscribe function
     onOperationRecorded: (callback: (operation: import('@dsl/types').Operation) => void) => () => void
     onBrowserEvent: (callback: (event: { type: string; data: unknown }) => void) => () => void
+    onBrowserStatusChanged: (callback: (status: { connected: boolean; cdpUrl?: string }) => void) => () => void
     
-    // Agent (Hierarchical Agent System)
+    // Agent (LangGraph-based)
     agent: {
       // Task Execution
-      executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; error?: string }>
+      executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>
       stopTask: () => Promise<{ success: boolean; error?: string }>
       getStatus: () => Promise<{ 
         status: string
@@ -101,6 +169,11 @@ interface Window {
       onStepFailed: (callback: (data: unknown) => void) => () => void
       onTaskCompleted: (callback: (data: unknown) => void) => () => void
       onTaskFailed: (callback: (data: unknown) => void) => () => void
+      
+      // Confirmation (Human-in-the-Loop)
+      confirmAction: (confirmed: boolean, comment?: string) => void
+      cancelConfirmation: () => void
+      onConfirmationRequested: (callback: (request: unknown) => void) => () => void
     }
   }
 }

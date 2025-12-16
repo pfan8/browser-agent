@@ -7,17 +7,91 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Operation, Recording } from '../dsl/types';
-import type { 
-  AgentState, 
-  AgentStatus, 
-  TaskPlan, 
-  CheckpointInfo, 
-  ConversationMessage,
-  AgentConfig,
-  AgentEvent,
-} from './agent/types';
 
-// Type definitions for the exposed API
+// ============================================
+// Type Definitions (matching agent-core types)
+// ============================================
+
+type AgentStatus = 
+  | 'idle'
+  | 'observing'
+  | 'thinking'
+  | 'acting'
+  | 'complete'
+  | 'error'
+  | 'paused'
+  | 'running';
+
+interface TaskPlan {
+  id: string;
+  goal: string;
+  steps: TaskStep[];
+  currentStepIndex: number;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TaskStep {
+  id: string;
+  description: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+  retryCount: number;
+}
+
+interface AgentState {
+  sessionId: string;
+  status: AgentStatus;
+  currentTask: string | null;
+  plan: TaskPlan | null;
+  memory: {
+    conversation: ConversationMessage[];
+    workingMemory: Record<string, unknown>;
+    facts: unknown[];
+  };
+  checkpoints: CheckpointInfo[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ConversationMessage {
+  id: string;
+  role: 'user' | 'agent' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface CheckpointInfo {
+  id: string;
+  name: string;
+  description?: string;
+  stepIndex: number;
+  createdAt: string;
+  isAutoSave: boolean;
+}
+
+interface AgentConfig {
+  maxIterations: number;
+  maxConsecutiveFailures: number;
+  thinkTimeout: number;
+  actionTimeout: number;
+  enableScreenshots: boolean;
+  llmModel: string;
+}
+
+interface AgentEvent {
+  type: string;
+  timestamp: string;
+  data: unknown;
+}
+
+// ============================================
+// Electron API Interface
+// ============================================
+
 interface ElectronAPI {
   // Browser control
   connectBrowser: (cdpUrl: string) => Promise<{ success: boolean; error?: string }>;
@@ -59,11 +133,12 @@ interface ElectronAPI {
   // Events - each returns an unsubscribe function
   onOperationRecorded: (callback: (operation: Operation) => void) => () => void;
   onBrowserEvent: (callback: (event: { type: string; data: unknown }) => void) => () => void;
+  onBrowserStatusChanged: (callback: (status: { connected: boolean; cdpUrl?: string }) => void) => () => void;
   
-  // Agent (Hierarchical Agent System)
+  // Agent (LangGraph-based)
   agent: {
     // Task Execution
-    executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; error?: string }>;
+    executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>;
     stopTask: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ status: AgentStatus; isRunning: boolean; currentPlan: TaskPlan | null; progress: { total: number; completed: number; failed: number; pending: number; percentage: number } | null }>;
     getState: () => Promise<AgentState>;
@@ -102,6 +177,11 @@ interface ElectronAPI {
     onStepFailed: (callback: (data: unknown) => void) => () => void;
     onTaskCompleted: (callback: (data: unknown) => void) => () => void;
     onTaskFailed: (callback: (data: unknown) => void) => () => void;
+    
+    // Confirmation (Human-in-the-Loop)
+    confirmAction: (confirmed: boolean, comment?: string) => void;
+    cancelConfirmation: () => void;
+    onConfirmationRequested: (callback: (request: unknown) => void) => () => void;
   };
 }
 
@@ -152,8 +232,16 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('browser-event', handler);
     return () => ipcRenderer.removeListener('browser-event', handler);
   },
+  // Browser status change listener (for auto-connect)
+  onBrowserStatusChanged: (callback: (status: { connected: boolean; cdpUrl?: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: { connected: boolean; cdpUrl?: string }) => {
+      callback(status);
+    };
+    ipcRenderer.on('browser-status-changed', handler);
+    return () => ipcRenderer.removeListener('browser-status-changed', handler);
+  },
   
-  // Agent (Hierarchical Agent System)
+  // Agent (LangGraph-based)
   agent: {
     // Task Execution
     executeTask: (task: string) => ipcRenderer.invoke('agent-execute-task', task),
@@ -231,8 +319,20 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('agent-task-failed', handler);
       return () => ipcRenderer.removeListener('agent-task-failed', handler);
     },
+    
+    // Confirmation (Human-in-the-Loop)
+    confirmAction: (confirmed: boolean, comment?: string) => {
+      ipcRenderer.send('agent-confirm-action', confirmed, comment);
+    },
+    cancelConfirmation: () => {
+      ipcRenderer.send('agent-cancel-confirmation');
+    },
+    onConfirmationRequested: (callback: (request: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: unknown) => callback(request);
+      ipcRenderer.on('agent-confirmation-requested', handler);
+      return () => ipcRenderer.removeListener('agent-confirmation-requested', handler);
+    },
   },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
-

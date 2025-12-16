@@ -162,7 +162,7 @@ export const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
             <div className={`${colors.bg} rounded-lg p-3 border ${colors.border}`}>
               <h3 className={`text-sm font-medium ${colors.text} mb-2`}>⚠️ 风险提示</h3>
               <ul className="text-sm text-gray-700 space-y-1">
-                {request.risk.reasons.map((reason, i) => (
+                {request.risk.reasons.map((reason: string, i: number) => (
                   <li key={i} className="flex items-start gap-2">
                     <span className="text-gray-400">•</span>
                     <span>{reason}</span>

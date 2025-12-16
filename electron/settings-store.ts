@@ -6,11 +6,21 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Information about the last active tab
+ */
+export interface LastTabInfo {
+  url: string;
+  title: string;
+  savedAt: string;
+}
+
 export interface AppSettings {
   llm?: {
     apiKey?: string;
     baseUrl?: string;
   };
+  lastTab?: LastTabInfo;
 }
 
 class SettingsStore {
@@ -92,6 +102,33 @@ class SettingsStore {
    */
   getSettingsPath(): string {
     return this.settingsPath;
+  }
+
+  /**
+   * Save the last active tab info
+   */
+  setLastTab(tabInfo: { url: string; title: string }): void {
+    this.settings.lastTab = {
+      url: tabInfo.url,
+      title: tabInfo.title,
+      savedAt: new Date().toISOString(),
+    };
+    this.save();
+  }
+
+  /**
+   * Get the last active tab info
+   */
+  getLastTab(): LastTabInfo | undefined {
+    return this.settings.lastTab;
+  }
+
+  /**
+   * Clear the last tab info
+   */
+  clearLastTab(): void {
+    delete this.settings.lastTab;
+    this.save();
   }
 }
 

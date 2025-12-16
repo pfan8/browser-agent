@@ -5,7 +5,7 @@
  * Allows creating, loading, and deleting sessions and checkpoints.
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 interface SessionInfo {
   id: string;

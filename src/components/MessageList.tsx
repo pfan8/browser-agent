@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import Markdown from 'react-markdown';
-import type { ChatMessage } from '@dsl/types';
+import type { ChatMessage, ExecutionStep } from '@dsl/types';
 
 interface CheckpointInfo {
   id: string;
@@ -34,6 +34,97 @@ function ThinkingSection({ thinking }: { thinking: string }) {
       {isExpanded && (
         <div className="thinking-content">
           <Markdown>{thinking}</Markdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Get icon for step type
+function getStepIcon(type: ExecutionStep['type'], status: ExecutionStep['status']) {
+  if (status === 'running') return '⟳';
+  if (status === 'error') return '✗';
+  if (status === 'success') {
+    switch (type) {
+      case 'think': return '💭';
+      case 'act': return '⚡';
+      case 'observe': return '👁';
+      default: return '•';
+    }
+  }
+  return '○';
+}
+
+// Get status class for step
+function getStepStatusClass(status: ExecutionStep['status']) {
+  switch (status) {
+    case 'running': return 'step-running';
+    case 'success': return 'step-success';
+    case 'error': return 'step-error';
+    default: return 'step-pending';
+  }
+}
+
+// Format duration
+function formatDuration(ms?: number): string {
+  if (!ms) return '';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Collapsible execution steps component
+function ExecutionStepsSection({ steps }: { steps: ExecutionStep[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  if (!steps || steps.length === 0) return null;
+  
+  const completedCount = steps.filter(s => s.status === 'success').length;
+  const hasRunning = steps.some(s => s.status === 'running');
+  const hasError = steps.some(s => s.status === 'error');
+  
+  return (
+    <div className="execution-steps-section">
+      <button 
+        className={`execution-steps-toggle ${hasRunning ? 'running' : ''} ${hasError ? 'has-error' : ''}`}
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <span className={`execution-steps-arrow ${isExpanded ? 'expanded' : ''}`}>▶</span>
+        <span className="execution-steps-icon">
+          {hasRunning ? '⟳' : hasError ? '⚠' : '✓'}
+        </span>
+        <span className="execution-steps-label">
+          执行步骤
+        </span>
+        <span className="execution-steps-count">
+          {completedCount}/{steps.length}
+        </span>
+      </button>
+      {isExpanded && (
+        <div className="execution-steps-content">
+          {steps.map((step, index) => (
+            <div 
+              key={step.id} 
+              className={`execution-step ${getStepStatusClass(step.status)}`}
+            >
+              <div className="step-header">
+                <span className="step-number">{index + 1}</span>
+                <span className="step-icon">{getStepIcon(step.type, step.status)}</span>
+                <span className="step-type">{step.type.toUpperCase()}</span>
+                {step.tool && <span className="step-tool">{step.tool}</span>}
+                {step.duration && (
+                  <span className="step-duration">{formatDuration(step.duration)}</span>
+                )}
+              </div>
+              <div className="step-content">
+                {step.content}
+              </div>
+              {step.error && (
+                <div className="step-error">
+                  ⚠️ {step.error}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -152,6 +243,9 @@ export default function MessageList({ messages, isProcessing, checkpoints = [], 
               {message.role === 'user' ? '◇' : message.role === 'system' ? '⚙' : '◈'}
             </div>
             <div className="message-content">
+              {message.executionSteps && message.executionSteps.length > 0 && (
+                <ExecutionStepsSection steps={message.executionSteps} />
+              )}
               {message.thinking && (
                 <ThinkingSection thinking={message.thinking} />
               )}

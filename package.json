@@ -4,9 +4,11 @@
   "description": "Interactive chat agent for browser automation with operation recording",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build:packages": "pnpm -r --filter './packages/**' build",
+    "dev": "pnpm build:packages && vite",
+    "build": "pnpm build:packages && tsc && vite build && electron-builder",
     "preview": "vite preview",
+    "preview:electron": "open 'release/mac-arm64/Chat Browser Agent.app'",
     "electron:dev": "vite",
     "electron:build": "vite build && electron-builder",
     "test": "vitest run",
@@ -18,7 +20,9 @@
     "test:e2e:ui": "playwright test --ui",
     "verify:prd": "tsx scripts/verify-prd.ts",
     "test:all": "pnpm test && pnpm test:e2e",
-    "acceptance": "tsx scripts/acceptance-test.ts"
+    "acceptance": "tsx scripts/acceptance-test.ts",
+    "agent:cli": "tsx scripts/agent-cli.ts",
+    "agent:graph": "tsx scripts/visualize-graph.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
@@ -33,7 +37,7 @@
     "uuid": "^11.0.3"
   },
   "devDependencies": {
-    "@playwright/test": "1.57.0",
+    "@playwright/test": "1.56.1",
     "@types/lodash": "^4.17.13",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",

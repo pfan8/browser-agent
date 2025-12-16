@@ -339,6 +339,18 @@ export const PREDEFINED_COMMANDS: PredefinedCommand[] = [
   }
 ];
 
+// Execution step for agent think/act process
+export interface ExecutionStep {
+  id: string;
+  type: 'think' | 'act' | 'observe';
+  timestamp: string;
+  content: string;
+  tool?: string;
+  status: 'pending' | 'running' | 'success' | 'error';
+  error?: string;
+  duration?: number; // milliseconds
+}
+
 // Message types for chat
 export interface ChatMessage {
   id: string;
@@ -350,6 +362,7 @@ export interface ChatMessage {
   error?: string;
   thinking?: string; // Collapsible thinking/interpretation section
   type?: 'command' | 'task' | 'chat' | 'status'; // Message type for hierarchical agent
+  executionSteps?: ExecutionStep[]; // Collapsible execution steps (think/act)
 }
 
 // Agent State

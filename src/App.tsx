@@ -156,8 +156,8 @@ function App() {
   useEffect(() => {
     if (!window.electronAPI?.agent?.onConfirmationRequested) return
 
-    const unsubscribe = window.electronAPI.agent.onConfirmationRequested((request: ConfirmationRequest) => {
-      setPendingConfirmation(request)
+    const unsubscribe = window.electronAPI.agent.onConfirmationRequested((request: unknown) => {
+      setPendingConfirmation(request as ConfirmationRequest)
     })
 
     return () => {
