@@ -4,12 +4,16 @@
 type AgentStatus = 
   | 'idle'
   | 'observing'
+  | 'planning'
+  | 'executing'
   | 'thinking'
   | 'acting'
   | 'complete'
   | 'error'
   | 'paused'
   | 'running';
+
+type ExecutionMode = 'iterative' | 'script';
 
 interface TaskStep {
   id: string;
@@ -160,6 +164,13 @@ interface Window {
       updateConfig: (config: Partial<AgentConfig>) => Promise<{ success: boolean; error?: string }>
       getConfig: () => Promise<AgentConfig>
       
+      // Trace
+      getTrace: () => Promise<string>
+      
+      // Execution Mode
+      getExecutionMode: () => Promise<ExecutionMode>
+      setExecutionMode: (mode: ExecutionMode) => Promise<{ success: boolean; error?: string }>
+      
       // Events - each returns an unsubscribe function
       onEvent: (callback: (event: AgentEvent) => void) => () => void
       onStatusChanged: (callback: (data: { status: string }) => void) => () => void
@@ -169,6 +180,9 @@ interface Window {
       onStepFailed: (callback: (data: unknown) => void) => () => void
       onTaskCompleted: (callback: (data: unknown) => void) => () => void
       onTaskFailed: (callback: (data: unknown) => void) => () => void
+      // Streaming updates for thinking and code
+      onThinkingUpdate?: (callback: (data: { stepId: string; thought: string; instruction: string }) => void) => () => void
+      onCodeUpdate?: (callback: (data: { stepId: string; code: string; instruction: string }) => void) => () => void
       
       // Confirmation (Human-in-the-Loop)
       confirmAction: (confirmed: boolean, comment?: string) => void

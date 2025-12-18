@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import MessageList from './MessageList';
 import CommandInput from './CommandInput';
 import type { ChatMessage } from '@dsl/types';
@@ -34,11 +34,23 @@ export default function ChatPanel({
   onStop,
 }: ChatPanelProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [inputValue, setInputValue] = useState('');
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Handle example click - set input value
+  const handleExampleClick = useCallback((text: string) => {
+    setInputValue(text);
+  }, []);
+
+  // Handle send message and clear input
+  const handleSendMessage = useCallback((message: string) => {
+    onSendMessage(message);
+    setInputValue('');
+  }, [onSendMessage]);
 
   return (
     <div className="chat-panel">
@@ -47,14 +59,17 @@ export default function ChatPanel({
         isProcessing={isProcessing}
         checkpoints={checkpoints}
         onRestoreCheckpoint={onRestoreCheckpoint}
+        onExampleClick={handleExampleClick}
       />
       <div ref={messagesEndRef} />
       <CommandInput 
-        onSend={onSendMessage} 
+        onSend={handleSendMessage} 
         disabled={isProcessing}
         isConnected={isConnected}
         isRunning={isRunning || isProcessing}
         onStop={onStop}
+        value={inputValue}
+        onValueChange={setInputValue}
       />
     </div>
   );

@@ -15,12 +15,20 @@ export interface LastTabInfo {
   savedAt: string;
 }
 
+/**
+ * Execution mode for CodeAct agent
+ */
+export type ExecutionMode = 'iterative' | 'script';
+
 export interface AppSettings {
   llm?: {
     apiKey?: string;
     baseUrl?: string;
   };
   lastTab?: LastTabInfo;
+  agent?: {
+    executionMode?: ExecutionMode;
+  };
 }
 
 class SettingsStore {
@@ -128,6 +136,44 @@ class SettingsStore {
    */
   clearLastTab(): void {
     delete this.settings.lastTab;
+    this.save();
+  }
+
+  /**
+   * Get agent settings
+   */
+  getAgentSettings(): { executionMode: ExecutionMode } {
+    return {
+      executionMode: this.settings.agent?.executionMode || 'iterative',
+    };
+  }
+
+  /**
+   * Set agent settings
+   */
+  setAgentSettings(config: { executionMode?: ExecutionMode }): void {
+    this.settings.agent = {
+      ...this.settings.agent,
+      ...config,
+    };
+    this.save();
+  }
+
+  /**
+   * Get execution mode
+   */
+  getExecutionMode(): ExecutionMode {
+    return this.settings.agent?.executionMode || 'iterative';
+  }
+
+  /**
+   * Set execution mode
+   */
+  setExecutionMode(mode: ExecutionMode): void {
+    this.settings.agent = {
+      ...this.settings.agent,
+      executionMode: mode,
+    };
     this.save();
   }
 }

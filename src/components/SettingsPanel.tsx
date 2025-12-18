@@ -4,6 +4,8 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
+type ExecutionMode = 'iterative' | 'script';
+
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 
 export default function SettingsPanel({ onClose }: SettingsPanelProps) {
@@ -12,6 +14,8 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [apiKeySet, setApiKeySet] = useState(false);
   const [currentBaseUrl, setCurrentBaseUrl] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('iterative');
+  const [savingMode, setSavingMode] = useState(false);
 
   // Load current config on mount
   useEffect(() => {
@@ -19,6 +23,11 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
       window.electronAPI.getLLMConfig().then(config => {
         setApiKeySet(config.hasApiKey);
         setCurrentBaseUrl(config.baseUrl);
+      });
+      
+      // Load execution mode
+      window.electronAPI.agent.getExecutionMode().then(mode => {
+        setExecutionMode(mode);
       });
     }
   }, []);
@@ -49,6 +58,21 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
       setSaving(false);
     }
   }, [apiKey, baseUrl]);
+
+  // Handle execution mode change
+  const handleModeChange = useCallback(async (mode: ExecutionMode) => {
+    if (!window.electronAPI) return;
+    
+    setSavingMode(true);
+    try {
+      const result = await window.electronAPI.agent.setExecutionMode(mode);
+      if (result.success) {
+        setExecutionMode(mode);
+      }
+    } finally {
+      setSavingMode(false);
+    }
+  }, []);
 
   return (
     <div className="settings-panel">
@@ -112,6 +136,59 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 ✓ API Key 已配置，AI 功能已启用
               </div>
             )}
+          </div>
+        </section>
+
+        {/* Agent Mode Section */}
+        <section className="settings-section">
+          <div className="section-header">
+            <span className="section-icon">◈</span>
+            <h3>Agent Mode</h3>
+            <span className={`status-badge ${executionMode === 'iterative' ? 'info' : 'warning'}`}>
+              {executionMode === 'iterative' ? 'Iterative' : 'Script'}
+            </span>
+          </div>
+          
+          <p className="section-description">
+            选择 Agent 的执行模式。单步迭代模式更可靠，完整脚本模式更快速。
+          </p>
+
+          <div className="mode-selector">
+            <label className={`mode-option ${executionMode === 'iterative' ? 'selected' : ''}`}>
+              <input
+                type="radio"
+                name="executionMode"
+                value="iterative"
+                checked={executionMode === 'iterative'}
+                onChange={() => handleModeChange('iterative')}
+                disabled={savingMode}
+              />
+              <div className="mode-content">
+                <div className="mode-title">单步迭代模式 (Iterative)</div>
+                <div className="mode-description">
+                  每次生成一小段代码并执行，根据结果决定下一步。
+                  更可靠，适合复杂任务和动态页面。
+                </div>
+              </div>
+            </label>
+            
+            <label className={`mode-option ${executionMode === 'script' ? 'selected' : ''}`}>
+              <input
+                type="radio"
+                name="executionMode"
+                value="script"
+                checked={executionMode === 'script'}
+                onChange={() => handleModeChange('script')}
+                disabled={savingMode}
+              />
+              <div className="mode-content">
+                <div className="mode-title">完整脚本模式 (Script)</div>
+                <div className="mode-description">
+                  一次性生成完整脚本并执行。
+                  更快速，适合简单任务和稳定页面。
+                </div>
+              </div>
+            </label>
           </div>
         </section>
 

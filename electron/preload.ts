@@ -73,6 +73,8 @@ interface CheckpointInfo {
   isAutoSave: boolean;
 }
 
+type ExecutionMode = 'iterative' | 'script';
+
 interface AgentConfig {
   maxIterations: number;
   maxConsecutiveFailures: number;
@@ -80,6 +82,7 @@ interface AgentConfig {
   actionTimeout: number;
   enableScreenshots: boolean;
   llmModel: string;
+  executionMode: ExecutionMode;
 }
 
 interface AgentEvent {
@@ -168,6 +171,13 @@ interface ElectronAPI {
     updateConfig: (config: Partial<AgentConfig>) => Promise<{ success: boolean; error?: string }>;
     getConfig: () => Promise<AgentConfig>;
     
+    // Trace
+    getTrace: () => Promise<string>;
+    
+    // Execution Mode
+    getExecutionMode: () => Promise<ExecutionMode>;
+    setExecutionMode: (mode: ExecutionMode) => Promise<{ success: boolean; error?: string }>;
+    
     // Events - each returns an unsubscribe function
     onEvent: (callback: (event: AgentEvent) => void) => () => void;
     onStatusChanged: (callback: (data: { status: AgentStatus }) => void) => () => void;
@@ -177,6 +187,9 @@ interface ElectronAPI {
     onStepFailed: (callback: (data: unknown) => void) => () => void;
     onTaskCompleted: (callback: (data: unknown) => void) => () => void;
     onTaskFailed: (callback: (data: unknown) => void) => () => void;
+    // Streaming updates for thinking and code
+    onThinkingUpdate: (callback: (data: { stepId: string; thought: string; instruction: string }) => void) => () => void;
+    onCodeUpdate: (callback: (data: { stepId: string; code: string; instruction: string }) => void) => () => void;
     
     // Confirmation (Human-in-the-Loop)
     confirmAction: (confirmed: boolean, comment?: string) => void;
@@ -278,6 +291,13 @@ const electronAPI: ElectronAPI = {
     updateConfig: (config: Partial<AgentConfig>) => ipcRenderer.invoke('agent-update-config', config),
     getConfig: () => ipcRenderer.invoke('agent-get-config'),
     
+    // Trace
+    getTrace: () => ipcRenderer.invoke('agent-get-trace'),
+    
+    // Execution Mode
+    getExecutionMode: () => ipcRenderer.invoke('agent-get-execution-mode'),
+    setExecutionMode: (mode: ExecutionMode) => ipcRenderer.invoke('agent-set-execution-mode', mode),
+    
     // Events - each returns an unsubscribe function
     onEvent: (callback: (event: AgentEvent) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, agentEvent: AgentEvent) => callback(agentEvent);
@@ -318,6 +338,17 @@ const electronAPI: ElectronAPI = {
       const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data);
       ipcRenderer.on('agent-task-failed', handler);
       return () => ipcRenderer.removeListener('agent-task-failed', handler);
+    },
+    // Streaming updates for thinking and code
+    onThinkingUpdate: (callback: (data: { stepId: string; thought: string; instruction: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { stepId: string; thought: string; instruction: string }) => callback(data);
+      ipcRenderer.on('agent-thinking-update', handler);
+      return () => ipcRenderer.removeListener('agent-thinking-update', handler);
+    },
+    onCodeUpdate: (callback: (data: { stepId: string; code: string; instruction: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { stepId: string; code: string; instruction: string }) => callback(data);
+      ipcRenderer.on('agent-code-update', handler);
+      return () => ipcRenderer.removeListener('agent-code-update', handler);
     },
     
     // Confirmation (Human-in-the-Loop)

@@ -1,18 +1,25 @@
 /**
  * Browser Adapter Types
  * 
- * Defines the interface for browser control operations.
- * This abstraction allows testing without Electron and
- * swapping implementations (e.g., Playwright, Puppeteer).
+ * Simplified interface for browser control - only runCode method.
+ * CodeAct Agent generates all browser operations as code.
  */
 
 /**
- * Result of a browser operation
+ * Result of code execution
  */
-export interface OperationResult {
+export interface CodeExecutionResult {
   success: boolean;
-  error?: string;
-  data?: unknown;
+  result?: unknown;       // Code return value
+  error?: string;         // Error message
+  logs?: string[];        // Console output captured during execution
+  
+  // Enhanced debugging info for self-repair
+  stackTrace?: string;    // Full stack trace when error occurs
+  errorType?: string;     // Error type (SyntaxError, TimeoutError, etc.)
+  errorLine?: number;     // Line number where error occurred in the code
+  pageUrl?: string;       // Page URL at execution time
+  pageTitle?: string;     // Page title at execution time
 }
 
 /**
@@ -25,93 +32,24 @@ export interface BrowserStatus {
 }
 
 /**
- * Page information
- */
-export interface PageInfo {
-  url: string;
-  title: string;
-}
-
-/**
- * Element information for observations
- */
-export interface ElementInfo {
-  selector: string;
-  tag: string;
-  text?: string;
-  attributes: Record<string, string>;
-  isVisible: boolean;
-  isInteractable: boolean;
-  boundingBox?: { x: number; y: number; width: number; height: number };
-}
-
-/**
- * Page/tab information
- */
-export interface TabInfo {
-  index: number;
-  url: string;
-  title: string;
-  active: boolean;
-}
-
-/**
- * Selector strategy used for element location
- */
-export type SelectorStrategy = 
-  | 'css' 
-  | 'xpath' 
-  | 'text' 
-  | 'testid' 
-  | 'role' 
-  | 'placeholder' 
-  | 'label';
-
-/**
- * Browser Adapter Interface
+ * Browser Adapter Interface (Simplified)
  * 
- * Provides a unified API for browser control operations.
- * Implementations can use Playwright, Puppeteer, or other tools.
+ * Only exposes runCode - all browser operations are done via code.
+ * This enables the CodeAct pattern where agents generate Playwright code.
  */
 export interface IBrowserAdapter {
-  // Connection
-  connect(cdpUrl: string): Promise<OperationResult>;
+  // Connection management
+  connect(cdpUrl: string): Promise<CodeExecutionResult>;
   disconnect(): Promise<void>;
-  reconnect(): Promise<OperationResult>;
+  reconnect(): Promise<CodeExecutionResult>;
   isConnected(): boolean;
   getStatus(): Promise<BrowserStatus>;
   getCdpUrl(): string;
   getLastConnectionError(): string | null;
   
-  // Navigation
-  navigate(url: string, waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'): Promise<OperationResult>;
-  goBack(): Promise<OperationResult>;
-  goForward(): Promise<OperationResult>;
-  
-  // Interactions
-  click(selector: string): Promise<OperationResult>;
-  type(selector: string, text: string, clear?: boolean): Promise<OperationResult>;
-  press(key: string): Promise<OperationResult>;
-  hover(selector: string): Promise<OperationResult>;
-  select(selector: string, value: string): Promise<OperationResult>;
-  
-  // Wait operations
-  wait(ms: number): Promise<OperationResult>;
-  waitForSelector(selector: string, state?: 'attached' | 'visible' | 'hidden'): Promise<OperationResult>;
-  
-  // Observation
-  screenshot(name?: string, fullPage?: boolean): Promise<OperationResult>;
-  getPageInfo(): Promise<PageInfo>;
-  getPageContent(): Promise<string>;
-  evaluateSelector(description: string): Promise<{ selector: string; alternatives: string[] }>;
-  
-  // Tab management
-  listPages(): Promise<TabInfo[]>;
-  switchToPage(index: number): Promise<OperationResult>;
-  closePage(index?: number): Promise<OperationResult>;
-  
-  // Code execution
-  runCode(code: string): Promise<OperationResult>;
+  // Code execution - THE core method
+  // Code has access to: page, context, browser (Playwright objects)
+  runCode(code: string): Promise<CodeExecutionResult>;
   
   // Events
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -136,4 +74,3 @@ export const DEFAULT_BROWSER_ADAPTER_CONFIG: BrowserAdapterConfig = {
   screenshotPath: './recordings',
   healthCheckInterval: 5000,
 };
-

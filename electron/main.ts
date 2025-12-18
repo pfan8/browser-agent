@@ -9,22 +9,99 @@
 
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'path';
-import { PlaywrightAdapter, type IBrowserAdapter } from '@chat-agent/browser-adapter';
+import { 
+  PlaywrightAdapter, 
+  type IBrowserAdapter,
+  configureBrowserLogger,
+  type BrowserLogEntry,
+} from '@chat-agent/browser-adapter';
 import { 
   BrowserAgent, 
-  createBrowserTools, 
   createCheckpointer,
+  configureAgentLogger,
   type AgentState,
   type AgentConfig,
+  type StructuredLogEntry,
 } from '@chat-agent/agent-core';
 import { operationRecorder } from './operation-recorder';
 import { settingsStore } from './settings-store';
 import { generatePlaywrightScript } from './script-generator';
 import type { Operation, Recording } from '../dsl/types';
-import { createLogger } from './utils/logger';
+import { createLogger, logger as electronLogger } from './utils/logger';
 
 // Create module logger
 const log = createLogger('Main');
+
+// Configure agent-core logger to write to Electron log files
+configureAgentLogger({
+  level: 'debug',
+  consoleOutput: false, // Electron logger already handles console output
+  customHandler: (entry: StructuredLogEntry) => {
+    // Route agent-core logs through Electron's file logger
+    const module = `${entry.layer}:${entry.module}`;
+    const traceContext = entry.traceId ? { traceId: entry.traceId, spanId: entry.spanId || '' } : undefined;
+    
+    switch (entry.level) {
+      case 'debug':
+        if (traceContext) {
+          electronLogger.debugWithTrace(module, entry.message, traceContext, entry.data);
+        } else {
+          electronLogger.debug(module, entry.message, entry.data);
+        }
+        break;
+      case 'info':
+        if (traceContext) {
+          electronLogger.infoWithTrace(module, entry.message, traceContext, entry.data, entry.duration);
+        } else {
+          electronLogger.info(module, entry.message, entry.data);
+        }
+        break;
+      case 'warn':
+        if (traceContext) {
+          electronLogger.warnWithTrace(module, entry.message, traceContext, entry.data);
+        } else {
+          electronLogger.warn(module, entry.message, entry.data);
+        }
+        break;
+      case 'error':
+        if (traceContext) {
+          electronLogger.errorWithTrace(module, entry.message, traceContext, entry.data);
+        } else {
+          electronLogger.error(module, entry.message, entry.data);
+        }
+        break;
+    }
+  },
+});
+
+// Configure browser-adapter logger to write to Electron log files
+configureBrowserLogger({
+  level: 'debug',
+  consoleOutput: false, // Electron logger already handles console output
+  customHandler: (entry: BrowserLogEntry) => {
+    // Route browser-adapter logs through Electron's file logger
+    const module = `${entry.layer}:${entry.module}`;
+    
+    switch (entry.level) {
+      case 'debug':
+        electronLogger.debug(module, entry.message, entry.data);
+        break;
+      case 'info':
+        if (entry.duration !== undefined) {
+          electronLogger.info(module, `${entry.message} (${entry.duration}ms)`, entry.data);
+        } else {
+          electronLogger.info(module, entry.message, entry.data);
+        }
+        break;
+      case 'warn':
+        electronLogger.warn(module, entry.message, entry.data);
+        break;
+      case 'error':
+        electronLogger.error(module, entry.message, entry.data);
+        break;
+    }
+  },
+});
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 try {
@@ -112,21 +189,20 @@ function getBrowserAdapter(): IBrowserAdapter {
 // Initialize agent
 function getAgent(): BrowserAgent {
   const savedSettings = settingsStore.getLLMSettings();
+  const executionMode = settingsStore.getExecutionMode();
   
   if (!agent || !agentInitialized) {
     const hasApiKey = !!savedSettings.apiKey;
     const keyPreview = savedSettings.apiKey 
       ? `${savedSettings.apiKey.substring(0, 10)}...${savedSettings.apiKey.slice(-4)}`
       : 'none';
-    log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}`);
+    log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}, mode=${executionMode}`);
     
     const adapter = getBrowserAdapter();
-    const tools = createBrowserTools(adapter);
     const checkpointer = createCheckpointer({ type: 'memory' });
     
     agent = new BrowserAgent({
       browserAdapter: adapter,
-      tools,
       llmConfig: {
         apiKey: savedSettings.apiKey || '',
         baseUrl: savedSettings.baseUrl,
@@ -135,6 +211,7 @@ function getAgent(): BrowserAgent {
         maxIterations: 20,
         maxConsecutiveFailures: 3,
         enableScreenshots: false,
+        executionMode,
       },
     });
     
@@ -160,13 +237,18 @@ async function saveCurrentTabInfo(): Promise<void> {
   }
   
   try {
-    const pageInfo = await browserAdapter.getPageInfo();
-    if (pageInfo.url && !pageInfo.url.startsWith('chrome://')) {
-      settingsStore.setLastTab({
-        url: pageInfo.url,
-        title: pageInfo.title || '',
-      });
-      log.info(`Saved last tab: ${pageInfo.url}`);
+    const result = await browserAdapter.runCode(`
+      return { url: page.url(), title: await page.title() };
+    `);
+    if (result.success && result.result) {
+      const pageInfo = result.result as { url: string; title: string };
+      if (pageInfo.url && !pageInfo.url.startsWith('chrome://')) {
+        settingsStore.setLastTab({
+          url: pageInfo.url,
+          title: pageInfo.title || '',
+        });
+        log.info(`Saved last tab: ${pageInfo.url}`);
+      }
     }
   } catch (error) {
     log.warn('Failed to save current tab info:', error);
@@ -182,15 +264,40 @@ async function restoreLastTab(): Promise<void> {
   
   try {
     log.info(`Attempting to restore last tab: ${lastTab.url}`);
-    const tabs = await browserAdapter.listPages();
+    
+    // Get list of pages via runCode
+    const listResult = await browserAdapter.runCode(`
+      const pages = context.pages();
+      const result = [];
+      for (let i = 0; i < pages.length; i++) {
+        const p = pages[i];
+        const url = p.url();
+        if (url.startsWith('chrome://') || url.startsWith('about:')) continue;
+        let title = 'Untitled';
+        try { title = await p.title(); } catch {}
+        result.push({ index: result.length, url, title, active: p === page });
+      }
+      return result;
+    `);
+    
+    if (!listResult.success || !Array.isArray(listResult.result)) {
+      log.warn('Failed to list pages for tab restoration');
+      return;
+    }
+    
+    const tabs = listResult.result as Array<{ index: number; url: string; title: string; active: boolean }>;
     
     // Try to find a tab that matches the saved URL
     const matchingTabIndex = tabs.findIndex(tab => tab.url === lastTab.url);
     
     if (matchingTabIndex >= 0) {
       log.info(`Found matching tab at index ${matchingTabIndex}, switching...`);
-      const result = await browserAdapter.switchToPage(matchingTabIndex);
-      if (result.success) {
+      const switchResult = await browserAdapter.runCode(`
+        const pages = context.pages().filter(p => !p.url().startsWith('chrome://'));
+        await pages[${matchingTabIndex}].bringToFront();
+        return { success: true };
+      `);
+      if (switchResult.success) {
         log.info('Successfully restored to last active tab');
         return;
       }
@@ -208,7 +315,11 @@ async function restoreLastTab(): Promise<void> {
     
     if (domainMatchIndex >= 0) {
       log.info(`Found tab with same domain at index ${domainMatchIndex}, switching...`);
-      await browserAdapter.switchToPage(domainMatchIndex);
+      await browserAdapter.runCode(`
+        const pages = context.pages().filter(p => !p.url().startsWith('chrome://'));
+        await pages[${domainMatchIndex}].bringToFront();
+        return { success: true };
+      `);
     } else {
       log.info('No matching tab found, staying on current tab');
     }
@@ -402,57 +513,127 @@ ipcMain.handle('get-browser-status', async () => {
 });
 
 // ============================================
-// IPC Handlers - Browser Operations
+// IPC Handlers - Browser Operations (via runCode)
 // ============================================
 
 ipcMain.handle('navigate', async (_event, url: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.navigate(url);
+  const fullUrl = url.startsWith('http') ? url : `https://${url}`;
+  return adapter.runCode(`
+    await page.goto(${JSON.stringify(fullUrl)}, { waitUntil: 'networkidle' });
+    return { success: true, data: { url: page.url() } };
+  `);
 });
 
 ipcMain.handle('click', async (_event, selector: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.click(selector);
+  return adapter.runCode(`
+    await page.click(${JSON.stringify(selector)});
+    return { success: true };
+  `);
 });
 
 ipcMain.handle('type', async (_event, selector: string, text: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.type(selector, text);
+  return adapter.runCode(`
+    await page.fill(${JSON.stringify(selector)}, ${JSON.stringify(text)});
+    return { success: true };
+  `);
 });
 
 ipcMain.handle('press', async (_event, key: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.press(key);
+  return adapter.runCode(`
+    await page.keyboard.press(${JSON.stringify(key)});
+    return { success: true };
+  `);
 });
 
 ipcMain.handle('screenshot', async (_event, name?: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.screenshot(name);
+  const filename = name || `screenshot_${Date.now()}`;
+  return adapter.runCode(`
+    const path = './recordings/${filename}.png';
+    await page.screenshot({ path, fullPage: true });
+    return { success: true, data: { path } };
+  `);
 });
 
 ipcMain.handle('wait-for', async (_event, ms: number) => {
   const adapter = getBrowserAdapter();
-  return adapter.wait(ms);
+  return adapter.runCode(`
+    await page.waitForTimeout(${ms});
+    return { success: true };
+  `);
 });
 
 ipcMain.handle('get-page-info', async () => {
   const adapter = getBrowserAdapter();
-  return adapter.getPageInfo();
+  // Use getStatus() directly instead of runCode to avoid unnecessary logging
+  const status = await adapter.getStatus();
+  return { 
+    url: status.url || '', 
+    title: status.title || '' 
+  };
 });
 
 ipcMain.handle('evaluate-selector', async (_event, description: string) => {
   const adapter = getBrowserAdapter();
-  return adapter.evaluateSelector(description);
+  const result = await adapter.runCode(`
+    const desc = ${JSON.stringify(description)}.toLowerCase();
+    const selectors = [];
+    const allElements = document.querySelectorAll('button, a, input, [role="button"], [data-testid]');
+    for (const el of allElements) {
+      const text = (el.textContent || '').trim().toLowerCase();
+      const testId = el.getAttribute('data-testid');
+      const ariaLabel = el.getAttribute('aria-label');
+      if (text && text.includes(desc)) {
+        if (testId) selectors.push('[data-testid="' + testId + '"]');
+      }
+      if (ariaLabel && ariaLabel.toLowerCase().includes(desc)) {
+        selectors.push('[aria-label="' + ariaLabel + '"]');
+      }
+    }
+    return { selector: selectors[0] || '', alternatives: selectors.slice(1, 5) };
+  `);
+  if (result.success && result.result) {
+    return result.result;
+  }
+  return { selector: '', alternatives: [] };
 });
 
 ipcMain.handle('list-pages', async () => {
   const adapter = getBrowserAdapter();
-  return adapter.listPages();
+  const result = await adapter.runCode(`
+    const pages = context.pages();
+    const result = [];
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
+      const url = p.url();
+      if (url.startsWith('chrome://') || url.startsWith('about:')) continue;
+      let title = 'Untitled';
+      try { title = await p.title(); } catch {}
+      result.push({ index: result.length, url, title, active: p === page });
+    }
+    return result;
+  `);
+  if (result.success && Array.isArray(result.result)) {
+    return result.result;
+  }
+  return [];
 });
 
 ipcMain.handle('switch-to-page', async (_event, index: number) => {
   const adapter = getBrowserAdapter();
-  return adapter.switchToPage(index);
+  return adapter.runCode(`
+    const pages = context.pages().filter(p => !p.url().startsWith('chrome://'));
+    if (${index} < 0 || ${index} >= pages.length) {
+      return { success: false, error: 'Invalid page index' };
+    }
+    const targetPage = pages[${index}];
+    await targetPage.bringToFront();
+    return { success: true, data: { index: ${index}, url: targetPage.url(), title: await targetPage.title() } };
+  `);
 });
 
 ipcMain.handle('run-code', async (_event, code: string) => {
@@ -555,16 +736,22 @@ ipcMain.handle('agent-execute-task', async (_event, task: string) => {
     const stepStartTimes = new Map<string, number>();
     let lastActionCount = 0;
     let lastObservationTimestamp = '';
-    let pendingThinkStepId: string | null = null;
-    let pendingActStepId: string | null = null;
+    let pendingPlannerStepId: string | null = null;
+    let pendingCodeActStepId: string | null = null;
+    let lastPlannerThought = '';
+    let lastInstruction = '';
     
     for await (const event of agentInstance.streamTask(task)) {
-      // Send progress events to renderer
-      safeSend('agent-event', {
-        type: event.node,
-        timestamp: new Date().toISOString(),
-        data: event.state,
-      });
+      // Check if task was aborted
+      if (event.node === '__abort__') {
+        log.info('Task was stopped by user');
+        safeSend('agent-task-stopped', { message: '任务已被用户停止' });
+        return safeSerialize({ 
+          success: false, 
+          error: 'Task stopped by user',
+          result: event.state.result || '任务已被用户停止',
+        });
+      }
       
       // Update status
       if (event.state.status) {
@@ -579,118 +766,232 @@ ipcMain.handle('agent-execute-task', async (_event, task: string) => {
           lastObservationTimestamp = obs.timestamp;
           const stepId = `step-${++stepCounter}-observe`;
           
+          // Send observe step with page info
           safeSend('agent-step-started', { 
             step: { 
               id: stepId, 
-              description: `观察: ${obs.title || obs.url}`.substring(0, 50)
+              description: `正在观察页面状态...`
             }, 
-            node: 'observe' 
+            node: 'observe',
+            observation: {
+              url: obs.url,
+              title: obs.title,
+            }
           });
           
           safeSend('agent-step-completed', { 
-            step: { id: stepId, description: `观察: ${obs.title || obs.url}`.substring(0, 50) }, 
+            step: { 
+              id: stepId, 
+              description: `📍 ${obs.title || obs.url}`.substring(0, 60)
+            }, 
             node: 'observe',
-            duration: 100
+            duration: 100,
+            observation: {
+              url: obs.url,
+              title: obs.title,
+            }
           });
         }
       }
       
-      // Track think node events - think adds a new action without result
-      if (event.node === 'think' && event.state.actionHistory) {
-        const currentActionCount = event.state.actionHistory.length;
+      // Track planner node events - planner decides next step
+      if (event.node === 'planner') {
+        const state = event.state as unknown as { 
+          plannerThought?: string; 
+          currentInstruction?: string;
+          isComplete?: boolean;
+          result?: string;
+        };
         
-        // New action was added by think node
-        if (currentActionCount > lastActionCount) {
-          const newAction = event.state.actionHistory[currentActionCount - 1];
+        // Complete pending planner step if any
+        if (pendingPlannerStepId) {
+          const duration = Date.now() - (stepStartTimes.get(pendingPlannerStepId) || Date.now());
+          safeSend('agent-step-completed', { 
+            step: { id: pendingPlannerStepId, description: lastPlannerThought || '分析完成' }, 
+            node: 'planner',
+            duration,
+            thought: lastPlannerThought,
+            instruction: lastInstruction,
+          });
+          pendingPlannerStepId = null;
+        }
+        
+        // If task is complete, don't start new steps (but still merge state below)
+        
+        // Start new planner step if there's a new instruction
+        if (state.currentInstruction && state.currentInstruction !== lastInstruction) {
+          lastInstruction = state.currentInstruction;
+          lastPlannerThought = state.plannerThought || '';
           
-          if (newAction && !newAction.result) {
-            // Complete any pending think step
-            if (pendingThinkStepId) {
-              const duration = Date.now() - (stepStartTimes.get(pendingThinkStepId) || Date.now());
-              safeSend('agent-step-completed', { 
-                step: { id: pendingThinkStepId, description: '思考完成' }, 
-                node: 'think',
-                duration 
-              });
-              pendingThinkStepId = null;
+          const stepId = `step-${++stepCounter}-planner`;
+          stepStartTimes.set(stepId, Date.now());
+          pendingPlannerStepId = stepId;
+          
+          // Emit thinking started with streaming effect
+          safeSend('agent-step-started', { 
+            step: { 
+              id: stepId, 
+              description: '🧠 正在思考...',
+            }, 
+            node: 'planner',
+          });
+          
+          // Emit thinking content progressively (simulate streaming)
+          if (lastPlannerThought) {
+            safeSend('agent-thinking-update', {
+              stepId,
+              thought: lastPlannerThought,
+              instruction: lastInstruction,
+            });
+          }
+        }
+      }
+      
+      // Track codeact node events - codeact generates and executes code
+      if (event.node === 'codeact') {
+        // Complete pending planner step first
+        if (pendingPlannerStepId) {
+          const duration = Date.now() - (stepStartTimes.get(pendingPlannerStepId) || Date.now());
+          safeSend('agent-step-completed', { 
+            step: { 
+              id: pendingPlannerStepId, 
+              description: lastPlannerThought 
+                ? `💭 ${lastPlannerThought.substring(0, 50)}${lastPlannerThought.length > 50 ? '...' : ''}`
+                : '分析完成'
+            }, 
+            node: 'planner',
+            duration: Math.max(duration, 100),
+            thought: lastPlannerThought,
+            instruction: lastInstruction,
+          });
+          pendingPlannerStepId = null;
+        }
+        
+        const currentActionCount = event.state.actionHistory?.length || 0;
+        
+        // New action was added
+        if (currentActionCount > lastActionCount) {
+          const newAction = event.state.actionHistory![currentActionCount - 1];
+          
+          if (newAction) {
+            // Complete pending codeact step if any
+            if (pendingCodeActStepId) {
+              const duration = Date.now() - (stepStartTimes.get(pendingCodeActStepId) || Date.now());
+              const prevAction = event.state.actionHistory![currentActionCount - 2];
+              
+              if (prevAction?.result?.success) {
+                safeSend('agent-step-completed', { 
+                  step: { id: pendingCodeActStepId, description: `✅ 执行成功` }, 
+                  node: 'codeact',
+                  duration,
+                  action: prevAction,
+                });
+              } else {
+                safeSend('agent-step-failed', { 
+                  step: { id: pendingCodeActStepId, description: `执行失败` }, 
+                  node: 'codeact',
+                  duration,
+                  action: prevAction,
+                  error: prevAction?.result?.error || 'Unknown error',
+                });
+              }
+              pendingCodeActStepId = null;
             }
             
-            // Start new think step
-            const stepId = `step-${++stepCounter}-think`;
+            // Start new codeact step
+            const stepId = `step-${++stepCounter}-codeact`;
             stepStartTimes.set(stepId, Date.now());
-            pendingThinkStepId = stepId;
+            pendingCodeActStepId = stepId;
             
-            const description = newAction.reasoning 
-              ? newAction.reasoning.substring(0, 60) + (newAction.reasoning.length > 60 ? '...' : '')
-              : `决定执行: ${newAction.tool}`;
+            // Extract code from action args
+            const codeSnippet = newAction.args?.code as string || '';
+            const instruction = newAction.args?.instruction as string || newAction.reasoning || '';
             
             safeSend('agent-step-started', { 
               step: { 
                 id: stepId, 
-                description: description,
-                tool: newAction.tool 
+                description: `⚡ ${instruction.substring(0, 50)}${instruction.length > 50 ? '...' : ''}`,
+                tool: 'codeact',
               }, 
-              node: 'think' 
+              node: 'codeact',
+              action: {
+                instruction,
+                thought: newAction.thought,
+              },
             });
             
-            // Complete think step immediately (thinking is done when action is decided)
-            const duration = Date.now() - (stepStartTimes.get(stepId) || Date.now());
-            safeSend('agent-step-completed', { 
-              step: { id: stepId, description: description }, 
-              node: 'think',
-              duration: Math.max(duration, 100)
-            });
-            pendingThinkStepId = null;
-            
-            // Start act step
-            const actStepId = `step-${++stepCounter}-act`;
-            stepStartTimes.set(actStepId, Date.now());
-            pendingActStepId = actStepId;
-            
-            safeSend('agent-step-started', { 
-              step: { 
-                id: actStepId, 
-                description: `执行 ${newAction.tool}`, 
-                tool: newAction.tool 
-              }, 
-              node: 'act',
-              action: newAction 
-            });
+            // Emit code execution details
+            if (codeSnippet) {
+              safeSend('agent-code-update', {
+                stepId,
+                code: codeSnippet,
+                instruction,
+              });
+            }
             
             lastActionCount = currentActionCount;
           }
         }
-      }
-      
-      // Track act node completion - act updates the action with result
-      if (event.node === 'act' && event.state.actionHistory && pendingActStepId) {
-        const lastAction = event.state.actionHistory[event.state.actionHistory.length - 1];
         
-        if (lastAction && lastAction.result) {
-          const duration = Date.now() - (stepStartTimes.get(pendingActStepId) || Date.now());
+        // Check if the last action has a result now (execution completed)
+        if (event.state.actionHistory && event.state.actionHistory.length > 0) {
+          const lastAction = event.state.actionHistory[event.state.actionHistory.length - 1];
           
-          if (lastAction.result.success) {
-            safeSend('agent-step-completed', { 
-              step: { id: pendingActStepId, description: `执行 ${lastAction.tool}` }, 
-              node: 'act',
-              action: lastAction,
-              duration 
-            });
-          } else {
-            safeSend('agent-step-failed', { 
-              step: { id: pendingActStepId, description: `执行 ${lastAction.tool}`, tool: lastAction.tool }, 
-              node: 'act',
-              action: lastAction, 
-              error: lastAction.result.error || 'Unknown error',
-              duration 
-            });
+          if (lastAction.result && pendingCodeActStepId) {
+            const duration = Date.now() - (stepStartTimes.get(pendingCodeActStepId) || Date.now());
+            
+            if (lastAction.result.success) {
+              safeSend('agent-step-completed', { 
+                step: { 
+                  id: pendingCodeActStepId, 
+                  description: `✅ ${lastAction.reasoning?.substring(0, 40) || '执行成功'}` 
+                }, 
+                node: 'codeact',
+                action: lastAction,
+                duration 
+              });
+            } else {
+              safeSend('agent-step-failed', { 
+                step: { 
+                  id: pendingCodeActStepId, 
+                  description: `❌ ${lastAction.reasoning?.substring(0, 40) || '执行失败'}`,
+                  tool: 'codeact',
+                }, 
+                node: 'codeact',
+                action: lastAction, 
+                error: lastAction.result.error || 'Unknown error',
+                duration 
+              });
+            }
+            
+            pendingCodeActStepId = null;
           }
-          
-          pendingActStepId = null;
         }
       }
       
-      finalState = event.state as AgentState;
+      // Merge partial state updates into finalState instead of overwriting
+      // This ensures isComplete and other fields are not lost between events
+      if (finalState) {
+        finalState = { ...finalState, ...event.state } as AgentState;
+      } else {
+        finalState = event.state as AgentState;
+      }
+    }
+    
+    // Complete any pending steps
+    if (pendingPlannerStepId) {
+      safeSend('agent-step-completed', { 
+        step: { id: pendingPlannerStepId, description: '分析完成' }, 
+        node: 'planner',
+        duration: Date.now() - (stepStartTimes.get(pendingPlannerStepId) || Date.now()),
+      });
+    }
+    if (pendingCodeActStepId) {
+      safeSend('agent-step-completed', { 
+        step: { id: pendingCodeActStepId, description: '执行完成' }, 
+        node: 'codeact',
+        duration: Date.now() - (stepStartTimes.get(pendingCodeActStepId) || Date.now()),
+      });
     }
     
     if (finalState) {
@@ -869,4 +1170,49 @@ ipcMain.handle('agent-update-config', async (_event, config: Record<string, unkn
 ipcMain.handle('agent-get-config', async () => {
   const agentInstance = getAgent();
   return agentInstance.getConfig();
+});
+
+// Get today's trace log
+ipcMain.handle('agent-get-trace', async () => {
+  const fs = await import('fs/promises');
+  const pathModule = await import('path');
+  
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const logFile = pathModule.join(process.cwd(), 'logs', `agent-${today}.log`);
+    
+    try {
+      const content = await fs.readFile(logFile, 'utf-8');
+      // Return the last 500 lines (most recent activity)
+      const lines = content.split('\n');
+      const lastLines = lines.slice(-500).join('\n');
+      return lastLines;
+    } catch {
+      // If today's log doesn't exist, return a message
+      return `No trace log found for today (${today})`;
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    return `Error reading trace: ${errorMsg}`;
+  }
+});
+
+// Execution Mode handlers
+ipcMain.handle('agent-get-execution-mode', async () => {
+  return settingsStore.getExecutionMode();
+});
+
+ipcMain.handle('agent-set-execution-mode', async (_event, mode: 'iterative' | 'script') => {
+  try {
+    settingsStore.setExecutionMode(mode);
+    // Update the agent config if it exists
+    const agentInstance = getAgent();
+    agentInstance.setExecutionMode(mode);
+    log.info('Execution mode updated', { mode });
+    return { success: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    log.error('Failed to set execution mode', { error: errorMessage });
+    return { success: false, error: errorMessage };
+  }
 });

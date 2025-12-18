@@ -5,7 +5,7 @@
  * Allows creating, loading, and deleting sessions and checkpoints.
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 
 interface SessionInfo {
   id: string;
@@ -68,6 +68,46 @@ export function SessionPanel({
   const [activeTab, setActiveTab] = useState<'sessions' | 'plan'>('plan');
   const [newSessionName, setNewSessionName] = useState('');
   const [showNewSession, setShowNewSession] = useState(false);
+  const [traceCopied, setTraceCopied] = useState(false);
+  const [traceLoading, setTraceLoading] = useState(false);
+
+  // Copy trace to clipboard
+  const handleCopyTrace = useCallback(async () => {
+    if (!window.electronAPI?.agent?.getTrace) {
+      // Fallback: copy current execution steps from the UI
+      const traceInfo = {
+        timestamp: new Date().toISOString(),
+        status,
+        isRunning,
+        currentPlan: currentPlan ? {
+          goal: currentPlan.goal,
+          steps: currentPlan.steps.map((s, i) => ({
+            index: i + 1,
+            description: s.description,
+            tool: s.tool,
+            status: s.status,
+          })),
+        } : null,
+        progress,
+      };
+      await navigator.clipboard.writeText(JSON.stringify(traceInfo, null, 2));
+      setTraceCopied(true);
+      setTimeout(() => setTraceCopied(false), 2000);
+      return;
+    }
+    
+    setTraceLoading(true);
+    try {
+      const trace = await window.electronAPI.agent.getTrace();
+      await navigator.clipboard.writeText(trace);
+      setTraceCopied(true);
+      setTimeout(() => setTraceCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy trace:', error);
+    } finally {
+      setTraceLoading(false);
+    }
+  }, [status, isRunning, currentPlan, progress]);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -107,11 +147,21 @@ export function SessionPanel({
           <span className={`status-dot ${status}`} />
           <span className="status-text">{status}</span>
         </div>
-        {isRunning && (
-          <button className="stop-btn" onClick={onStopTask}>
-            ⏹ Stop
+        <div className="status-actions">
+          <button 
+            className={`trace-btn ${traceCopied ? 'copied' : ''}`}
+            onClick={handleCopyTrace}
+            disabled={traceLoading}
+            title="复制当前 Trace 日志"
+          >
+            {traceLoading ? '⏳' : traceCopied ? '✓ 已复制' : '📋 Trace'}
           </button>
-        )}
+          {isRunning && (
+            <button className="stop-btn" onClick={onStopTask}>
+              ⏹ Stop
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Progress Bar */}
@@ -309,6 +359,40 @@ export function SessionPanel({
         .status-text {
           color: var(--text-secondary, #a0a0c0);
           text-transform: capitalize;
+        }
+
+        .status-actions {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .trace-btn {
+          padding: 4px 10px;
+          background: var(--bg-tertiary, #0f0f1a);
+          border: 1px solid var(--border-color, #2a2a4a);
+          border-radius: 4px;
+          color: var(--text-secondary, #a0a0c0);
+          cursor: pointer;
+          font-size: 11px;
+          transition: all 0.2s;
+        }
+
+        .trace-btn:hover:not(:disabled) {
+          background: var(--bg-secondary, #1a1a2e);
+          border-color: #8b5cf6;
+          color: #8b5cf6;
+        }
+
+        .trace-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .trace-btn.copied {
+          background: rgba(34, 197, 94, 0.2);
+          border-color: #22c55e;
+          color: #22c55e;
         }
 
         .stop-btn {

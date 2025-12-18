@@ -6,6 +6,8 @@ interface CommandInputProps {
   isConnected: boolean;
   isRunning?: boolean;
   onStop?: () => void;
+  value?: string;
+  onValueChange?: (value: string) => void;
 }
 
 export default function CommandInput({ 
@@ -14,9 +16,15 @@ export default function CommandInput({
   isConnected,
   isRunning = false,
   onStop,
+  value,
+  onValueChange,
 }: CommandInputProps) {
-  const [input, setInput] = useState('');
+  const [internalInput, setInternalInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  
+  // Support both controlled and uncontrolled modes
+  const input = value !== undefined ? value : internalInput;
+  const setInput = onValueChange || setInternalInput;
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -24,9 +32,15 @@ export default function CommandInput({
 
     onSend(trimmed);
     setInput('');
-  }, [input, disabled, onSend]);
+  }, [input, disabled, onSend, setInput]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+    // 检查是否正在使用输入法（IME）进行输入
+    // 如果是，则不发送消息，让输入法完成拼音到汉字的转换
+    if (e.nativeEvent.isComposing || e.key === 'Process') {
+      return;
+    }
+    
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();

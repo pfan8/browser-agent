@@ -8,6 +8,7 @@
 
 import { Annotation, messagesStateReducer } from "@langchain/langgraph";
 import { BaseMessage } from "@langchain/core/messages";
+import { type TraceContext } from './tracing';
 
 /**
  * Agent status enum (RA-05: loop termination states)
@@ -15,13 +16,20 @@ import { BaseMessage } from "@langchain/core/messages";
 export type AgentStatus = 
   | 'idle'
   | 'observing'
-  | 'thinking'
-  | 'acting'
+  | 'planning'      // Planner is deciding next step
+  | 'executing'     // CodeAct is generating/executing code
+  | 'thinking'      // Legacy: for backwards compatibility
+  | 'acting'        // Legacy: for backwards compatibility
   | 'complete'
   | 'error'
   | 'paused'
   | 'retrying'      // ER-01, ER-02: retry state
   | 'waiting';      // MS-04: waiting for element
+
+/**
+ * Execution mode for CodeAct
+ */
+export type ExecutionMode = 'iterative' | 'script';
 
 /**
  * Page load state for SA-01
@@ -50,6 +58,13 @@ export interface Observation {
   // SA-06: Page change detection
   contentHash?: string;
   previousUrl?: string;
+  // Last action result for context continuity
+  lastActionResult?: {
+    tool: string;
+    success: boolean;
+    data?: unknown;
+    error?: string;
+  };
 }
 
 /**
@@ -141,6 +156,8 @@ export interface AgentConfig {
   maxRepeatedActions: number;
   // RA-08: Rule fallback
   enableRuleFallback: boolean;
+  // CodeAct execution mode
+  executionMode: ExecutionMode;
 }
 
 /**
@@ -159,6 +176,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   enableScrollSearch: true,
   maxRepeatedActions: 3,
   enableRuleFallback: true,
+  executionMode: 'iterative',
 };
 
 /**
@@ -291,6 +309,30 @@ export const AgentStateAnnotation = Annotation.Root({
   useFallbackRules: Annotation<boolean>({
     reducer: (_, newValue) => newValue,
     default: () => false,
+  }),
+  
+  // Trace context for distributed tracing
+  traceContext: Annotation<TraceContext | null>({
+    reducer: (existing, newValue) => newValue ?? existing,
+    default: () => null,
+  }),
+
+  // CodeAct: Current instruction from Planner for CodeAct to execute
+  currentInstruction: Annotation<string | null>({
+    reducer: (_, newValue) => newValue,
+    default: () => null,
+  }),
+
+  // CodeAct: Planner's thought/reasoning for current step
+  plannerThought: Annotation<string | null>({
+    reducer: (_, newValue) => newValue,
+    default: () => null,
+  }),
+
+  // CodeAct: Execution mode
+  executionMode: Annotation<ExecutionMode>({
+    reducer: (_, newValue) => newValue,
+    default: () => 'iterative',
   }),
 });
 

@@ -741,19 +741,25 @@ export function useReActAgent(): ReActAgentHookReturn {
         const stepData = data as { 
           step?: { id?: string; description?: string; tool?: string };
           node?: string;
+          observation?: { url?: string; title?: string };
+          action?: { instruction?: string; thought?: string };
         } | undefined;
         
         if (stepData?.step) {
-          const stepType = stepData.node === 'think' ? 'think' : 
-                          stepData.node === 'observe' ? 'observe' : 'act';
+          // Map node names to step types
+          const stepType = stepData.node === 'planner' ? 'planner' : 
+                          stepData.node === 'observe' ? 'observe' : 'codeact';
           
           const step: ExecutionStep = {
             id: stepData.step.id || uuidv4(),
             type: stepType,
             timestamp: new Date().toISOString(),
-            content: stepData.step.description || `执行 ${stepData.step.tool || stepType}`,
+            content: stepData.step.description || `执行中...`,
             tool: stepData.step.tool,
             status: 'running',
+            observation: stepData.observation,
+            thought: stepData.action?.thought,
+            instruction: stepData.action?.instruction,
           };
           
           addExecutionStepRef.current(step);
@@ -767,12 +773,19 @@ export function useReActAgent(): ReActAgentHookReturn {
         const stepData = data as { 
           step?: { id?: string; description?: string };
           duration?: number;
+          thought?: string;
+          instruction?: string;
+          observation?: { url?: string; title?: string };
         } | undefined;
         
         if (stepData?.step?.id) {
           updateExecutionStepRef.current(stepData.step.id, {
             status: 'success',
             duration: stepData.duration,
+            content: stepData.step.description || '',
+            thought: stepData.thought,
+            instruction: stepData.instruction,
+            observation: stepData.observation,
           });
         }
         refreshStatusRef.current();
@@ -796,12 +809,40 @@ export function useReActAgent(): ReActAgentHookReturn {
             status: 'error',
             error: errorMsg,
             duration: stepData.duration,
+            content: stepData.step.description || '执行失败',
           });
         }
         
         refreshStatusRef.current();
       })
     );
+
+    // Subscribe to streaming updates (if available)
+    if (window.electronAPI.agent.onThinkingUpdate) {
+      unsubscribers.push(
+        window.electronAPI.agent.onThinkingUpdate((data: { stepId: string; thought: string; instruction: string }) => {
+          if (data.stepId) {
+            updateExecutionStepRef.current(data.stepId, {
+              thought: data.thought,
+              instruction: data.instruction,
+            });
+          }
+        })
+      );
+    }
+
+    if (window.electronAPI.agent.onCodeUpdate) {
+      unsubscribers.push(
+        window.electronAPI.agent.onCodeUpdate((data: { stepId: string; code: string; instruction: string }) => {
+          if (data.stepId) {
+            updateExecutionStepRef.current(data.stepId, {
+              code: data.code,
+              instruction: data.instruction,
+            });
+          }
+        })
+      );
+    }
 
     unsubscribers.push(
       window.electronAPI.agent.onTaskCompleted(() => {

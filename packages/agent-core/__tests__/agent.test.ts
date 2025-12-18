@@ -436,11 +436,12 @@ describe('ER-06: Failure Report', () => {
     
     const report = buildFailureReport(state);
     
-    expect(report).toContain('Completed steps');
-    expect(report).toContain('navigate');
-    expect(report).toContain('Failed step');
-    expect(report).toContain('click');
-    expect(report).toContain('Element not found');
+    // Report is in Chinese
+    expect(report).toContain('已完成的步骤');
+    expect(report).toContain('导航');
+    expect(report).toContain('失败的步骤');
+    expect(report).toContain('点击');
+    expect(report).toContain('找不到');
   });
 });
 
@@ -531,8 +532,11 @@ describe('RA-01: Observe Node', () => {
     
     const result = await observeNode(state);
     
-    expect(result.status).toBe('error');
-    expect(result.error).toContain('not connected');
+    // When disconnected, we still return an observation with a special URL
+    // This allows chat messages to be handled even without browser connection
+    expect(result.status).toBe('observing');
+    expect(result.observation?.url).toBe('browser://not-connected');
+    expect(result.observation?.loadState).toBe('error');
   });
   
   it('should increment iteration count', async () => {
@@ -621,7 +625,8 @@ describe('RA-03: Act Node', () => {
     const result = await actNode(state);
     
     expect(result.status).toBe('error');
-    expect(result.error).toContain('Unknown tool');
+    // Error message is in Chinese
+    expect(result.error).toContain('未知操作');
     expect(result.consecutiveFailures).toBe(1);
   });
   

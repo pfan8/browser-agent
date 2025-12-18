@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Trace Viewer</title>
+  <style>
+    :root {
+      --bg-primary: #1a1b26;
+      --bg-secondary: #24283b;
+      --bg-tertiary: #1f2335;
+      --text-primary: #c0caf5;
+      --text-secondary: #a9b1d6;
+      --text-muted: #565f89;
+      --accent-blue: #7aa2f7;
+      --accent-purple: #bb9af7;
+      --accent-green: #9ece6a;
+      --accent-orange: #ff9e64;
+      --accent-red: #f7768e;
+      --accent-cyan: #7dcfff;
+      --border-color: #3b4261;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-secondary);
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header h1::before {
+      content: '◈';
+      color: var(--accent-purple);
+    }
+
+    .file-input-wrapper {
+      position: relative;
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    .file-btn {
+      background: var(--accent-blue);
+      color: var(--bg-primary);
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .file-btn:hover {
+      background: var(--accent-cyan);
+      transform: translateY(-1px);
+    }
+
+    .filter-input {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 13px;
+      width: 300px;
+      transition: border-color 0.2s;
+    }
+
+    .filter-input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+
+    .filter-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .file-name {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .file-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .file-path {
+      color: var(--accent-cyan);
+      font-size: 12px;
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .refresh-btn {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .refresh-btn:hover {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+
+    .refresh-btn.visible {
+      display: flex;
+    }
+
+    .refresh-btn.refreshing {
+      opacity: 0.7;
+      cursor: wait;
+    }
+
+    .refresh-icon {
+      display: inline-block;
+    }
+
+    .refresh-icon.spinning {
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .last-refresh {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    /* Main Layout */
+    .main {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      height: calc(100vh - 65px);
+    }
+
+    /* Trace List */
+    .trace-list {
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
+      overflow-y: auto;
+      padding: 12px;
+    }
+
+    .trace-list-header {
+      padding: 8px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 8px;
+    }
+
+    .trace-item {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .trace-item:hover {
+      border-color: var(--accent-blue);
+      transform: translateX(2px);
+    }
+
+    .trace-item.selected {
+      border-color: var(--accent-purple);
+      background: rgba(187, 154, 247, 0.1);
+    }
+
+    .trace-item.has-error {
+      border-left: 3px solid var(--accent-red);
+    }
+
+    .trace-item.success {
+      border-left: 3px solid var(--accent-green);
+    }
+
+    .trace-id-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .trace-id {
+      font-size: 11px;
+      color: var(--accent-cyan);
+      font-family: inherit;
+    }
+
+    .copy-trace-btn {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 10px;
+      font-family: inherit;
+      transition: all 0.2s;
+      opacity: 0;
+    }
+
+    .trace-item:hover .copy-trace-btn {
+      opacity: 1;
+    }
+
+    .copy-trace-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    .copy-trace-btn.copied {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      opacity: 1;
+    }
+
+    .trace-goal {
+      font-size: 13px;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .trace-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .trace-meta span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .duration-badge {
+      background: var(--bg-primary);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .iteration-badge {
+      color: var(--accent-orange);
+    }
+
+    /* Detail Panel */
+    .detail-panel {
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    .empty-state h2 {
+      font-size: 16px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    .empty-state p {
+      font-size: 13px;
+    }
+
+    /* Timeline */
+    .timeline-section {
+      margin-bottom: 32px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent-purple);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title::before {
+      content: '▸';
+    }
+
+    .timeline-container {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 20px;
+      border: 1px solid var(--border-color);
+    }
+
+    .timeline-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .timeline-svg {
+      width: 100%;
+      height: auto;
+      min-height: 120px;
+    }
+
+    .timeline-legend {
+      display: flex;
+      gap: 16px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color);
+      font-size: 11px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .legend-dot.observe { background: var(--accent-blue); }
+    .legend-dot.think { background: var(--accent-purple); }
+    .legend-dot.act { background: var(--accent-green); }
+    .legend-dot.error { background: var(--accent-red); }
+
+    /* Events List */
+    .events-section {
+      margin-bottom: 32px;
+    }
+
+    .event-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+
+    .event-header {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .event-header:hover {
+      background: var(--bg-tertiary);
+    }
+
+    .event-expand-icon {
+      margin-right: 12px;
+      color: var(--text-muted);
+      transition: transform 0.2s;
+      font-size: 10px;
+    }
+
+    .event-item.expanded .event-expand-icon {
+      transform: rotate(90deg);
+    }
+
+    .event-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 90px;
+    }
+
+    .event-level {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 12px;
+      font-weight: 600;
+      min-width: 50px;
+      text-align: center;
+    }
+
+    .event-level.debug { background: var(--bg-tertiary); color: var(--text-muted); }
+    .event-level.info { background: rgba(122, 162, 247, 0.2); color: var(--accent-blue); }
+    .event-level.warn { background: rgba(255, 158, 100, 0.2); color: var(--accent-orange); }
+    .event-level.error { background: rgba(247, 118, 142, 0.2); color: var(--accent-red); }
+
+    .event-module {
+      font-size: 11px;
+      color: var(--accent-cyan);
+      margin-right: 12px;
+      min-width: 140px;
+    }
+
+    .event-message {
+      font-size: 12px;
+      color: var(--text-primary);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .event-duration {
+      font-size: 11px;
+      color: var(--accent-orange);
+      margin-left: 12px;
+    }
+
+    .event-content {
+      display: none;
+      padding: 16px;
+      background: var(--bg-tertiary);
+      border-top: 1px solid var(--border-color);
+    }
+
+    .event-item.expanded .event-content {
+      display: block;
+    }
+
+    .event-data {
+      background: var(--bg-primary);
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .event-data-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* LLM Context Section */
+    .llm-context-section {
+      margin-top: 16px;
+    }
+
+    .llm-context-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .copy-btn {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+
+    .copy-btn:hover {
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .copy-btn.copied {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+
+    /* JSON Syntax Highlighting */
+    .json-key { color: var(--accent-cyan); }
+    .json-string { color: var(--accent-green); }
+    .json-number { color: var(--accent-orange); }
+    .json-boolean { color: var(--accent-purple); }
+    .json-null { color: var(--accent-red); }
+
+    /* Drag and Drop */
+    .drop-zone {
+      position: fixed;
+      inset: 0;
+      background: rgba(26, 27, 38, 0.95);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .drop-zone.active {
+      display: flex;
+    }
+
+    .drop-zone-content {
+      border: 2px dashed var(--accent-blue);
+      border-radius: 16px;
+      padding: 48px 64px;
+      text-align: center;
+    }
+
+    .drop-zone-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    /* Stats Bar */
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      padding: 12px 16px;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      margin-bottom: 24px;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--accent-cyan);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg-primary);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+
+      .trace-list {
+        max-height: 300px;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Agent Trace Viewer</h1>
+    <div class="file-input-wrapper">
+      <input type="file" id="fileInput" class="file-input" accept=".log,.txt">
+      <button class="file-btn" onclick="document.getElementById('fileInput').click()">
+        📂 Open Log File
+      </button>
+    </div>
+    <input 
+      type="text" 
+      class="filter-input" 
+      id="filterInput" 
+      placeholder="Filter by traceId, goal, or 'error'..."
+    >
+    <div class="file-info">
+      <span class="file-path" id="filePath" title=""></span>
+      <button class="refresh-btn" id="refreshBtn" onclick="refreshFile()">
+        <span class="refresh-icon">🔄</span> Refresh
+      </button>
+      <span class="last-refresh" id="lastRefresh"></span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="trace-list" id="traceList">
+      <div class="empty-state">
+        <div class="empty-state-icon">📋</div>
+        <h2>No traces loaded</h2>
+        <p>Open a log file or drag & drop here</p>
+      </div>
+    </div>
+    <div class="detail-panel" id="detailPanel">
+      <div class="empty-state">
+        <div class="empty-state-icon">🔍</div>
+        <h2>Select a trace</h2>
+        <p>Click on a trace from the list to view details</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-zone-content">
+      <div class="drop-zone-icon">📥</div>
+      <h2>Drop log file here</h2>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    // State
+    // ============================================
+    let allTraces = [];
+    let selectedTraceId = null;
+    let currentFile = null;
+    let lastRefreshTime = null;
+
+    // ============================================
+    // Log Parser
+    // ============================================
+    function parseLogLine(line) {
+      if (!line.trim()) return null;
+
+      // Pattern: 2025-12-17T07:48:31.333Z INFO  [agent:Graph] traceId=xxx spanId=xxx Message {json}
+      const mainPattern = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(DEBUG|INFO|WARN|ERROR)\s+\[([^\]]+)\]\s+(.*)$/;
+      const match = line.match(mainPattern);
+      
+      if (!match) return null;
+
+      const [, timestamp, level, module, rest] = match;
+      
+      // Extract traceId and spanId if present
+      let traceId = null;
+      let spanId = null;
+      let message = rest;
+      
+      const traceMatch = rest.match(/traceId=(\S+)/);
+      const spanMatch = rest.match(/spanId=(\S+)/);
+      
+      if (traceMatch) traceId = traceMatch[1];
+      if (spanMatch) spanId = spanMatch[1];
+      
+      // Remove traceId and spanId from message
+      message = message.replace(/traceId=\S+\s*/g, '').replace(/spanId=\S+\s*/g, '').trim();
+      
+      // Extract JSON data if present
+      let data = null;
+      const jsonMatch = message.match(/\{.*\}$/);
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[0]);
+          message = message.substring(0, message.length - jsonMatch[0].length).trim();
+        } catch (e) {
+          // Not valid JSON, keep as part of message
+        }
+      }
+
+      return {
+        timestamp,
+        level: level.toLowerCase(),
+        module,
+        traceId,
+        spanId,
+        message,
+        data,
+        raw: line
+      };
+    }
+
+    function parseLogFile(content) {
+      const lines = content.split('\n');
+      const events = [];
+      
+      for (const line of lines) {
+        const parsed = parseLogLine(line);
+        if (parsed) {
+          events.push(parsed);
+        }
+      }
+      
+      return events;
+    }
+
+    // ============================================
+    // Trace Analyzer
+    // ============================================
+    function analyzeTraces(events) {
+      const traceMap = new Map();
+      
+      // Group events by traceId
+      for (const event of events) {
+        if (event.traceId) {
+          if (!traceMap.has(event.traceId)) {
+            traceMap.set(event.traceId, {
+              traceId: event.traceId,
+              events: [],
+              goal: null,
+              startTime: null,
+              endTime: null,
+              hasError: false,
+              iterations: 0,
+              status: 'unknown'
+            });
+          }
+          traceMap.get(event.traceId).events.push(event);
+        }
+      }
+      
+      // Analyze each trace
+      for (const trace of traceMap.values()) {
+        // Sort events by timestamp
+        trace.events.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        
+        if (trace.events.length > 0) {
+          trace.startTime = new Date(trace.events[0].timestamp);
+          trace.endTime = new Date(trace.events[trace.events.length - 1].timestamp);
+          trace.duration = trace.endTime - trace.startTime;
+        }
+        
+        // Extract goal and analyze
+        for (const event of trace.events) {
+          if (event.data?.goal && !trace.goal) {
+            trace.goal = event.data.goal;
+          }
+          if (event.level === 'error') {
+            trace.hasError = true;
+          }
+          if (event.data?.iteration) {
+            trace.iterations = Math.max(trace.iterations, event.data.iteration);
+          }
+          if (event.message.includes('Task completed') || event.message.includes('Task marked complete')) {
+            trace.status = 'success';
+          }
+          if (event.message.includes('failed') || event.message.includes('Streamed task failed')) {
+            trace.status = 'failed';
+          }
+        }
+        
+        if (trace.status === 'unknown' && trace.hasError) {
+          trace.status = 'error';
+        }
+      }
+      
+      // Convert to array and sort by start time (newest first)
+      return Array.from(traceMap.values()).sort((a, b) => b.startTime - a.startTime);
+    }
+
+    // ============================================
+    // Renderers
+    // ============================================
+    function renderTraceList(traces, filter = '') {
+      const container = document.getElementById('traceList');
+      const filterLower = filter.toLowerCase();
+      
+      const filteredTraces = traces.filter(trace => {
+        if (!filter) return true;
+        if (filter === 'error' && trace.hasError) return true;
+        if (trace.traceId.toLowerCase().includes(filterLower)) return true;
+        if (trace.goal && trace.goal.toLowerCase().includes(filterLower)) return true;
+        return false;
+      });
+      
+      if (filteredTraces.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">🔍</div>
+            <h2>No traces found</h2>
+            <p>${filter ? 'Try a different filter' : 'Open a log file to get started'}</p>
+          </div>
+        `;
+        return;
+      }
+      
+      container.innerHTML = `
+        <div class="trace-list-header">
+          ${filteredTraces.length} trace${filteredTraces.length !== 1 ? 's' : ''} found
+        </div>
+        ${filteredTraces.map(trace => `
+          <div class="trace-item ${trace.status === 'success' ? 'success' : ''} ${trace.hasError ? 'has-error' : ''} ${selectedTraceId === trace.traceId ? 'selected' : ''}"
+               onclick="selectTrace('${trace.traceId}')">
+            <div class="trace-id-row">
+              <span class="trace-id">${trace.traceId}</span>
+              <button class="copy-trace-btn" onclick="copyTraceId(event, '${trace.traceId}', this)">📋 Copy</button>
+            </div>
+            <div class="trace-goal">${escapeHtml(trace.goal || 'Unknown goal')}</div>
+            <div class="trace-meta">
+              <span class="duration-badge">⏱ ${formatDuration(trace.duration)}</span>
+              <span class="iteration-badge">↻ ${trace.iterations} iter</span>
+              <span>${trace.events.length} events</span>
+            </div>
+          </div>
+        `).join('')}
+      `;
+    }
+
+    function renderTraceDetail(trace) {
+      const container = document.getElementById('detailPanel');
+      
+      if (!trace) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">🔍</div>
+            <h2>Select a trace</h2>
+            <p>Click on a trace from the list to view details</p>
+          </div>
+        `;
+        return;
+      }
+      
+      const stats = analyzeTraceStats(trace);
+      
+      container.innerHTML = `
+        <div class="stats-bar">
+          <div class="stat-item">
+            <div class="stat-value">${formatDuration(trace.duration)}</div>
+            <div class="stat-label">Duration</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">${trace.iterations}</div>
+            <div class="stat-label">Iterations</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">${stats.llmCalls}</div>
+            <div class="stat-label">LLM Calls</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">${stats.toolCalls}</div>
+            <div class="stat-label">Tool Calls</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" style="color: ${stats.errors > 0 ? 'var(--accent-red)' : 'var(--accent-green)'}">${stats.errors}</div>
+            <div class="stat-label">Errors</div>
+          </div>
+        </div>
+        
+        <div class="timeline-section">
+          <div class="section-title">Timeline</div>
+          <div class="timeline-container">
+            <div class="timeline-header">
+              <span>${formatTime(trace.startTime)}</span>
+              <span>${formatTime(trace.endTime)}</span>
+            </div>
+            ${renderTimeline(trace)}
+            <div class="timeline-legend">
+              <div class="legend-item"><div class="legend-dot observe"></div> Observe</div>
+              <div class="legend-item"><div class="legend-dot think"></div> Think</div>
+              <div class="legend-item"><div class="legend-dot act"></div> Act</div>
+              <div class="legend-item"><div class="legend-dot error"></div> Error</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="events-section">
+          <div class="section-title">Events (${trace.events.length})</div>
+          ${trace.events.map((event, idx) => renderEventItem(event, idx)).join('')}
+        </div>
+      `;
+    }
+
+    function renderTimeline(trace) {
+      const width = 800;
+      const height = 100;
+      const padding = 20;
+      const barHeight = 20;
+      
+      if (!trace.startTime || !trace.endTime || trace.duration === 0) {
+        return '<svg class="timeline-svg" viewBox="0 0 800 60"><text x="400" y="30" text-anchor="middle" fill="#565f89">No timeline data</text></svg>';
+      }
+      
+      const scale = (width - 2 * padding) / trace.duration;
+      
+      // Group events by node type
+      const nodeEvents = [];
+      let currentNode = null;
+      let nodeStart = null;
+      
+      for (const event of trace.events) {
+        if (event.message.includes('Node completed:')) {
+          const nodeMatch = event.message.match(/Node completed:\s*(\w+)/);
+          if (nodeMatch && nodeStart) {
+            const eventTime = new Date(event.timestamp);
+            nodeEvents.push({
+              type: currentNode,
+              start: nodeStart,
+              end: eventTime,
+              duration: eventTime - nodeStart
+            });
+          }
+        }
+        
+        // Track node transitions
+        if (event.module.includes('ObserveNode')) {
+          currentNode = 'observe';
+          nodeStart = new Date(event.timestamp);
+        } else if (event.module.includes('ThinkNode')) {
+          currentNode = 'think';
+          nodeStart = new Date(event.timestamp);
+        } else if (event.module.includes('ActNode')) {
+          currentNode = 'act';
+          nodeStart = new Date(event.timestamp);
+        }
+      }
+      
+      // Also track errors
+      const errorEvents = trace.events
+        .filter(e => e.level === 'error')
+        .map(e => ({
+          time: new Date(e.timestamp),
+          message: e.message
+        }));
+      
+      const colors = {
+        observe: '#7aa2f7',
+        think: '#bb9af7',
+        act: '#9ece6a'
+      };
+      
+      let svg = `<svg class="timeline-svg" viewBox="0 0 ${width} ${height}">`;
+      
+      // Background line
+      svg += `<line x1="${padding}" y1="${height/2}" x2="${width - padding}" y2="${height/2}" stroke="#3b4261" stroke-width="2"/>`;
+      
+      // Node bars
+      nodeEvents.forEach((node, idx) => {
+        const x = padding + (node.start - trace.startTime) * scale;
+        const w = Math.max(2, node.duration * scale);
+        const y = height/2 - barHeight/2;
+        
+        svg += `<rect x="${x}" y="${y}" width="${w}" height="${barHeight}" fill="${colors[node.type] || '#565f89'}" rx="4" opacity="0.8">
+          <title>${node.type}: ${formatDuration(node.duration)}</title>
+        </rect>`;
+      });
+      
+      // Error markers
+      errorEvents.forEach(err => {
+        const x = padding + (err.time - trace.startTime) * scale;
+        svg += `<circle cx="${x}" cy="${height/2}" r="6" fill="#f7768e">
+          <title>Error: ${escapeHtml(err.message)}</title>
+        </circle>`;
+      });
+      
+      // Start/end markers
+      svg += `<circle cx="${padding}" cy="${height/2}" r="4" fill="#7dcfff"/>`;
+      svg += `<circle cx="${width - padding}" cy="${height/2}" r="4" fill="#7dcfff"/>`;
+      
+      svg += '</svg>';
+      return svg;
+    }
+
+    function renderEventItem(event, idx) {
+      const hasData = event.data && Object.keys(event.data).length > 0;
+      const isLLMContext = event.message.includes('LLM Context');
+      
+      let duration = '';
+      if (event.data?.duration) {
+        duration = `<span class="event-duration">${event.data.duration}ms</span>`;
+      }
+      
+      return `
+        <div class="event-item" id="event-${idx}">
+          <div class="event-header" onclick="toggleEvent(${idx})">
+            <span class="event-expand-icon">▶</span>
+            <span class="event-time">${formatTime(new Date(event.timestamp))}</span>
+            <span class="event-level ${event.level}">${event.level.toUpperCase()}</span>
+            <span class="event-module">[${event.module}]</span>
+            <span class="event-message">${escapeHtml(event.message)}</span>
+            ${duration}
+          </div>
+          ${hasData || isLLMContext ? `
+            <div class="event-content">
+              ${isLLMContext ? renderLLMContext(event) : ''}
+              ${hasData ? `
+                <div class="event-data-label">Data</div>
+                <div class="event-data">${syntaxHighlight(JSON.stringify(event.data, null, 2))}</div>
+              ` : ''}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function renderLLMContext(event) {
+      if (!event.data?.context) return '';
+      
+      const contextId = `llm-context-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      return `
+        <div class="llm-context-section">
+          <div class="llm-context-header">
+            <div class="event-data-label">LLM Context</div>
+            <button class="copy-btn" onclick="copyToClipboard('${contextId}', this)">Copy</button>
+          </div>
+          <div class="event-data" id="${contextId}">${escapeHtml(event.data.context)}</div>
+        </div>
+      `;
+    }
+
+    function analyzeTraceStats(trace) {
+      let llmCalls = 0;
+      let toolCalls = 0;
+      let errors = 0;
+      
+      for (const event of trace.events) {
+        if (event.message.includes('LLM response received')) llmCalls++;
+        if (event.message.includes('Executing tool')) toolCalls++;
+        if (event.level === 'error') errors++;
+      }
+      
+      return { llmCalls, toolCalls, errors };
+    }
+
+    // ============================================
+    // Utilities
+    // ============================================
+    function formatDuration(ms) {
+      if (!ms && ms !== 0) return '-';
+      if (ms < 1000) return `${ms}ms`;
+      if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+      return `${(ms / 60000).toFixed(1)}m`;
+    }
+
+    function formatTime(date) {
+      if (!date) return '-';
+      return date.toLocaleTimeString('en-US', { 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        fractionalSecondDigits: 3
+      });
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function syntaxHighlight(json) {
+      if (!json) return '';
+      return json
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
+          let cls = 'json-number';
+          if (/^"/.test(match)) {
+            if (/:$/.test(match)) {
+              cls = 'json-key';
+            } else {
+              cls = 'json-string';
+            }
+          } else if (/true|false/.test(match)) {
+            cls = 'json-boolean';
+          } else if (/null/.test(match)) {
+            cls = 'json-null';
+          }
+          return `<span class="${cls}">${match}</span>`;
+        });
+    }
+
+    // ============================================
+    // Event Handlers
+    // ============================================
+    function selectTrace(traceId) {
+      selectedTraceId = traceId;
+      const trace = allTraces.find(t => t.traceId === traceId);
+      renderTraceList(allTraces, document.getElementById('filterInput').value);
+      renderTraceDetail(trace);
+    }
+
+    function toggleEvent(idx) {
+      const el = document.getElementById(`event-${idx}`);
+      el.classList.toggle('expanded');
+    }
+
+    function copyToClipboard(elementId, btn) {
+      const el = document.getElementById(elementId);
+      navigator.clipboard.writeText(el.textContent).then(() => {
+        btn.classList.add('copied');
+        btn.textContent = 'Copied!';
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.textContent = 'Copy';
+        }, 2000);
+      });
+    }
+
+    function copyTraceId(event, traceId, btn) {
+      event.stopPropagation(); // Prevent selecting the trace
+      navigator.clipboard.writeText(traceId).then(() => {
+        btn.classList.add('copied');
+        btn.textContent = '✓ Copied';
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.textContent = '📋 Copy';
+        }, 1500);
+      });
+    }
+
+    function stopRefreshSpinner() {
+      const refreshBtn = document.getElementById('refreshBtn');
+      const refreshIcon = document.querySelector('.refresh-icon');
+      refreshBtn.classList.remove('refreshing');
+      if (refreshIcon) refreshIcon.classList.remove('spinning');
+    }
+
+    function startRefreshSpinner() {
+      const refreshBtn = document.getElementById('refreshBtn');
+      const refreshIcon = document.querySelector('.refresh-icon');
+      refreshBtn.classList.add('refreshing');
+      if (refreshIcon) refreshIcon.classList.add('spinning');
+    }
+
+    function loadFile(file, isRefresh = false) {
+      // Store file reference for refresh
+      currentFile = file;
+      
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const content = e.target.result;
+          const events = parseLogFile(content);
+          allTraces = analyzeTraces(events);
+          
+          // Only reset selection if not refreshing
+          if (!isRefresh) {
+            selectedTraceId = null;
+          }
+          
+          // Update file info display
+          const filePathEl = document.getElementById('filePath');
+          const refreshBtn = document.getElementById('refreshBtn');
+          const lastRefreshEl = document.getElementById('lastRefresh');
+          
+          // Show file path (use webkitRelativePath if available, otherwise just name)
+          const displayPath = file.webkitRelativePath || file.name;
+          filePathEl.textContent = displayPath;
+          filePathEl.title = displayPath;
+          
+          // Show refresh button and stop spinner
+          refreshBtn.classList.add('visible');
+          stopRefreshSpinner();
+          
+          // Update last refresh time
+          lastRefreshTime = new Date();
+          lastRefreshEl.textContent = `Last: ${formatTime(lastRefreshTime)}`;
+          
+          renderTraceList(allTraces, document.getElementById('filterInput').value);
+          
+          // Auto-select first trace or keep current selection
+          if (isRefresh && selectedTraceId) {
+            const trace = allTraces.find(t => t.traceId === selectedTraceId);
+            if (trace) {
+              renderTraceDetail(trace);
+            } else {
+              selectedTraceId = null;
+              renderTraceDetail(null);
+            }
+          } else {
+            renderTraceDetail(null);
+            if (allTraces.length > 0) {
+              selectTrace(allTraces[0].traceId);
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing log file:', err);
+          stopRefreshSpinner();
+        }
+      };
+      
+      reader.onerror = (e) => {
+        console.error('Error reading file:', e);
+        stopRefreshSpinner();
+      };
+      
+      reader.readAsText(file);
+    }
+
+    function refreshFile() {
+      if (!currentFile) {
+        console.warn('No file to refresh');
+        return;
+      }
+      
+      startRefreshSpinner();
+      
+      // Small delay to show the spinner, then re-read the file
+      setTimeout(() => {
+        loadFile(currentFile, true);
+      }, 100);
+    }
+
+    // ============================================
+    // Event Listeners
+    // ============================================
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        loadFile(e.target.files[0]);
+      }
+    });
+
+    document.getElementById('filterInput').addEventListener('input', (e) => {
+      renderTraceList(allTraces, e.target.value);
+    });
+
+    // Drag and drop
+    const dropZone = document.getElementById('dropZone');
+    
+    document.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('active');
+    });
+
+    document.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget === null) {
+        dropZone.classList.remove('active');
+      }
+    });
+
+    document.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('active');
+      
+      if (e.dataTransfer.files.length > 0) {
+        loadFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      // Ctrl/Cmd + O to open file
+      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        e.preventDefault();
+        document.getElementById('fileInput').click();
+      }
+      
+      // Ctrl/Cmd + R to refresh (only if file is loaded)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+        if (currentFile) {
+          e.preventDefault();
+          refreshFile();
+        }
+      }
+      
+      // Escape to clear filter
+      if (e.key === 'Escape') {
+        document.getElementById('filterInput').value = '';
+        renderTraceList(allTraces);
+      }
+    });
+  </script>
+</body>
+</html>
+

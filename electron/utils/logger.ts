@@ -5,6 +5,7 @@
  * - Writes logs to files in the logs/ directory
  * - Supports multiple log levels (debug, info, warn, error)
  * - Includes timestamps and module prefixes
+ * - Supports trace context for distributed tracing
  * - Also outputs to console for development
  */
 
@@ -18,15 +19,45 @@ import { app } from 'electron';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+export type LogLayer = 'electron' | 'agent' | 'browser';
+
+/**
+ * Trace context for distributed tracing
+ */
+export interface TraceContext {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+}
+
+/**
+ * Structured log entry for analysis
+ */
+export interface StructuredLogEntry {
+  timestamp: string;
+  level: LogLevel;
+  layer: LogLayer;
+  module: string;
+  traceId?: string;
+  spanId?: string;
+  message: string;
+  duration?: number;
+  data?: Record<string, unknown>;
+}
+
 export interface LoggerConfig {
   /** Log level threshold - logs below this level won't be written */
   level: LogLevel;
+  /** Layer identifier for this logger */
+  layer: LogLayer;
   /** Whether to also output to console */
   consoleOutput: boolean;
   /** Max file size in bytes before rotation (default: 10MB) */
   maxFileSize: number;
   /** Max number of rotated files to keep */
   maxFiles: number;
+  /** Use structured JSON format for file output */
+  structuredOutput: boolean;
 }
 
 // ============================================
@@ -42,9 +73,11 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 
 const DEFAULT_CONFIG: LoggerConfig = {
   level: 'debug',
+  layer: 'electron',
   consoleOutput: true,
   maxFileSize: 10 * 1024 * 1024, // 10MB
   maxFiles: 5,
+  structuredOutput: false,
 };
 
 // ============================================
@@ -174,21 +207,43 @@ class Logger {
   }
 
   /**
-   * Format log message
+   * Format log message (legacy format)
    */
-  private formatMessage(level: LogLevel, module: string, message: string, data?: unknown): string {
+  private formatMessage(
+    level: LogLevel, 
+    module: string, 
+    message: string, 
+    data?: unknown,
+    traceContext?: TraceContext,
+    duration?: number
+  ): string {
     const timestamp = new Date().toISOString();
     const levelStr = level.toUpperCase().padEnd(5);
     const moduleStr = module ? `[${module}]` : '';
     
-    let logLine = `${timestamp} ${levelStr} ${moduleStr} ${message}`;
+    let logLine = `${timestamp} ${levelStr} ${moduleStr}`;
+    
+    // Add trace context if available
+    if (traceContext?.traceId) {
+      logLine += ` traceId=${traceContext.traceId}`;
+    }
+    if (traceContext?.spanId) {
+      logLine += ` spanId=${traceContext.spanId}`;
+    }
+    
+    logLine += ` ${message}`;
+    
+    // Add duration if available
+    if (duration !== undefined) {
+      logLine += ` (${duration}ms)`;
+    }
     
     if (data !== undefined) {
       try {
-        const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-        logLine += `\n${dataStr}`;
+        const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+        logLine += ` ${dataStr}`;
       } catch {
-        logLine += `\n[Unable to stringify data]`;
+        logLine += ` [Unable to stringify data]`;
       }
     }
     
@@ -196,9 +251,53 @@ class Logger {
   }
 
   /**
+   * Format as structured JSON entry
+   */
+  private formatStructured(
+    level: LogLevel,
+    module: string,
+    message: string,
+    data?: unknown,
+    traceContext?: TraceContext,
+    duration?: number
+  ): string {
+    const entry: StructuredLogEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      layer: this.config.layer,
+      module,
+      message,
+    };
+    
+    if (traceContext?.traceId) {
+      entry.traceId = traceContext.traceId;
+    }
+    if (traceContext?.spanId) {
+      entry.spanId = traceContext.spanId;
+    }
+    if (duration !== undefined) {
+      entry.duration = duration;
+    }
+    if (data !== undefined && data !== null) {
+      entry.data = typeof data === 'object' 
+        ? data as Record<string, unknown> 
+        : { value: data };
+    }
+    
+    return JSON.stringify(entry);
+  }
+
+  /**
    * Write log entry
    */
-  private write(level: LogLevel, module: string, message: string, data?: unknown): void {
+  private write(
+    level: LogLevel, 
+    module: string, 
+    message: string, 
+    data?: unknown,
+    traceContext?: TraceContext,
+    duration?: number
+  ): void {
     // Check log level threshold
     if (LOG_LEVELS[level] < LOG_LEVELS[this.config.level]) {
       return;
@@ -209,7 +308,9 @@ class Logger {
       this.init();
     }
 
-    const formattedMessage = this.formatMessage(level, module, message, data);
+    const formattedMessage = this.config.structuredOutput
+      ? this.formatStructured(level, module, message, data, traceContext, duration)
+      : this.formatMessage(level, module, message, data, traceContext, duration);
 
     // Write to console if enabled
     if (this.config.consoleOutput) {
@@ -217,12 +318,24 @@ class Logger {
         : level === 'warn' ? console.warn 
         : console.log;
       
-      // Format for console with color
+      // Format for console
       const modulePrefix = module ? `[${module}]` : '';
+      let consoleMsg = modulePrefix;
+      
+      if (traceContext?.traceId) {
+        consoleMsg += ` [${traceContext.traceId}]`;
+      }
+      
+      consoleMsg += ` ${message}`;
+      
+      if (duration !== undefined) {
+        consoleMsg += ` (${duration}ms)`;
+      }
+      
       if (data !== undefined) {
-        consoleMethod(`${modulePrefix} ${message}`, data);
+        consoleMethod(consoleMsg, data);
       } else {
-        consoleMethod(`${modulePrefix} ${message}`);
+        consoleMethod(consoleMsg);
       }
     }
 
@@ -247,7 +360,7 @@ class Logger {
     return new ModuleLogger(this, module);
   }
 
-  // Public log methods
+  // Public log methods (legacy without trace context)
   debug(module: string, message: string, data?: unknown): void {
     this.write('debug', module, message, data);
   }
@@ -262,6 +375,44 @@ class Logger {
 
   error(module: string, message: string, data?: unknown): void {
     this.write('error', module, message, data);
+  }
+
+  // Public log methods with trace context
+  debugWithTrace(
+    module: string, 
+    message: string, 
+    traceContext: TraceContext, 
+    data?: unknown
+  ): void {
+    this.write('debug', module, message, data, traceContext);
+  }
+
+  infoWithTrace(
+    module: string, 
+    message: string, 
+    traceContext: TraceContext, 
+    data?: unknown,
+    duration?: number
+  ): void {
+    this.write('info', module, message, data, traceContext, duration);
+  }
+
+  warnWithTrace(
+    module: string, 
+    message: string, 
+    traceContext: TraceContext, 
+    data?: unknown
+  ): void {
+    this.write('warn', module, message, data, traceContext);
+  }
+
+  errorWithTrace(
+    module: string, 
+    message: string, 
+    traceContext: TraceContext, 
+    data?: unknown
+  ): void {
+    this.write('error', module, message, data, traceContext);
   }
 
   /**
@@ -294,34 +445,138 @@ class Logger {
 class ModuleLogger {
   private parent: Logger;
   private module: string;
+  private currentTraceContext: TraceContext | null = null;
 
   constructor(parent: Logger, module: string) {
     this.parent = parent;
     this.module = module;
   }
 
+  /**
+   * Set trace context for subsequent logs
+   */
+  setTraceContext(context: TraceContext | null): void {
+    this.currentTraceContext = context;
+  }
+
+  /**
+   * Get current trace context
+   */
+  getTraceContext(): TraceContext | null {
+    return this.currentTraceContext;
+  }
+
   debug(message: string, data?: unknown): void {
-    this.parent.debug(this.module, message, data);
+    if (this.currentTraceContext) {
+      this.parent.debugWithTrace(this.module, message, this.currentTraceContext, data);
+    } else {
+      this.parent.debug(this.module, message, data);
+    }
   }
 
   info(message: string, data?: unknown): void {
-    this.parent.info(this.module, message, data);
+    if (this.currentTraceContext) {
+      this.parent.infoWithTrace(this.module, message, this.currentTraceContext, data);
+    } else {
+      this.parent.info(this.module, message, data);
+    }
   }
 
   warn(message: string, data?: unknown): void {
-    this.parent.warn(this.module, message, data);
+    if (this.currentTraceContext) {
+      this.parent.warnWithTrace(this.module, message, this.currentTraceContext, data);
+    } else {
+      this.parent.warn(this.module, message, data);
+    }
   }
 
   error(message: string, data?: unknown): void {
-    this.parent.error(this.module, message, data);
+    if (this.currentTraceContext) {
+      this.parent.errorWithTrace(this.module, message, this.currentTraceContext, data);
+    } else {
+      this.parent.error(this.module, message, data);
+    }
+  }
+
+  // Methods with explicit trace context
+  debugWithTrace(message: string, traceContext: TraceContext, data?: unknown): void {
+    this.parent.debugWithTrace(this.module, message, traceContext, data);
+  }
+
+  infoWithTrace(
+    message: string, 
+    traceContext: TraceContext, 
+    data?: unknown, 
+    duration?: number
+  ): void {
+    this.parent.infoWithTrace(this.module, message, traceContext, data, duration);
+  }
+
+  warnWithTrace(message: string, traceContext: TraceContext, data?: unknown): void {
+    this.parent.warnWithTrace(this.module, message, traceContext, data);
+  }
+
+  errorWithTrace(message: string, traceContext: TraceContext, data?: unknown): void {
+    this.parent.errorWithTrace(this.module, message, traceContext, data);
+  }
+
+  /**
+   * Log with duration measurement
+   */
+  infoWithDuration(message: string, duration: number, data?: unknown): void {
+    if (this.currentTraceContext) {
+      this.parent.infoWithTrace(this.module, message, this.currentTraceContext, data, duration);
+    } else {
+      // Fall back to regular info with duration in message
+      const msgWithDuration = `${message} (${duration}ms)`;
+      this.parent.info(this.module, msgWithDuration, data);
+    }
   }
 
   /**
    * Create a sub-logger with additional prefix
    */
   child(subModule: string): ModuleLogger {
-    return new ModuleLogger(this.parent, `${this.module}:${subModule}`);
+    const child = new ModuleLogger(this.parent, `${this.module}:${subModule}`);
+    child.setTraceContext(this.currentTraceContext);
+    return child;
   }
+}
+
+// ============================================
+// Timer Utility
+// ============================================
+
+export interface OperationTimer {
+  /** End the timer and log the result */
+  end(message?: string, data?: unknown): number;
+  /** End the timer without logging */
+  endSilent(): number;
+}
+
+/**
+ * Start a timer for an operation
+ */
+export function startTimer(
+  logger: ModuleLogger,
+  operationName: string,
+  traceContext?: TraceContext
+): OperationTimer {
+  const startTime = Date.now();
+  
+  return {
+    end: (message, data) => {
+      const duration = Date.now() - startTime;
+      const msg = message || `${operationName} completed`;
+      if (traceContext) {
+        logger.infoWithTrace(msg, traceContext, data, duration);
+      } else {
+        logger.infoWithDuration(msg, duration, data);
+      }
+      return duration;
+    },
+    endSilent: () => Date.now() - startTime,
+  };
 }
 
 // ============================================
@@ -339,4 +594,3 @@ export function createLogger(module: string): ModuleLogger {
 // Export types
 export { ModuleLogger };
 export default logger;
-

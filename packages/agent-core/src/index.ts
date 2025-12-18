@@ -2,13 +2,9 @@
  * Agent Core Package
  * 
  * LangGraph-based browser automation agent.
- * Provides a ReAct-style agent for web automation tasks.
- * 
- * Implements PRD requirements:
- * - RA-*: ReAct agent core loop
- * - MS-*: Multi-step task execution
- * - SA-*: State awareness
- * - ER-*: Error recovery
+ * Uses a two-layer architecture:
+ * - Planner: High-level task planning (doesn't know Playwright)
+ * - CodeAct: Code generation and execution (knows Playwright API)
  */
 
 // State types and utilities
@@ -17,11 +13,27 @@ export * from './state';
 // Graph and agent
 export { createAgentGraph, BrowserAgent, type AgentGraphConfig } from './graph';
 
-// Nodes
-export { createObserveNode, createThinkNode, createActNode, type ThinkNodeConfig } from './nodes';
+// Planner module
+export { 
+  createPlannerNode,
+  type PlannerNodeConfig,
+  type PlanStep,
+  type Plan,
+  type PlannerDecision,
+  type PlannerObservation,
+  type PlannerHistoryEntry,
+} from './planner';
 
-// Tools
-export { createBrowserTools } from './tools';
+// CodeAct module
+export {
+  createCodeActNode,
+  type CodeActNodeConfig,
+  type CodeAction,
+  type CodeResult,
+  type CodeActDecision,
+  type CodeActConfig,
+  type ExecutionMode,
+} from './codeact';
 
 // Checkpointer
 export { createCheckpointer, defaultCheckpointer, type CheckpointerConfig, type CheckpointerType } from './checkpointer';
@@ -37,3 +49,36 @@ export {
   type LLMProvider,
 } from './config';
 
+// Tracing
+export {
+  type TraceContext,
+  type SpanEvent,
+  type CompletedSpan,
+  type LogLevel,
+  type LogLayer,
+  type StructuredLogEntry,
+  type AgentLoggerConfig,
+  type ModuleAgentLogger,
+  type OperationTimer,
+  type LangSmithConfig,
+  generateTraceId,
+  generateSpanId,
+  createTraceContext,
+  createChildSpan,
+  completeSpan,
+  createSpanEvent,
+  extractTraceHeaders,
+  parseTraceHeaders,
+  formatTraceContext,
+  configureAgentLogger,
+  setTraceContext,
+  getTraceContext,
+  createAgentLogger,
+  startTimer,
+  // LangSmith
+  getLangSmithConfig,
+  isLangSmithEnabled,
+  initLangSmith,
+  getLangSmithEnvVars,
+  LANGSMITH_SETUP_INSTRUCTIONS,
+} from './tracing';

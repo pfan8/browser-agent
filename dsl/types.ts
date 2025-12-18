@@ -342,13 +342,21 @@ export const PREDEFINED_COMMANDS: PredefinedCommand[] = [
 // Execution step for agent think/act process
 export interface ExecutionStep {
   id: string;
-  type: 'think' | 'act' | 'observe';
+  type: 'planner' | 'codeact' | 'observe';
   timestamp: string;
   content: string;
   tool?: string;
   status: 'pending' | 'running' | 'success' | 'error';
   error?: string;
   duration?: number; // milliseconds
+  // Enhanced fields for streaming display
+  thought?: string;      // Planner's thinking/reasoning
+  instruction?: string;  // Instruction to execute
+  code?: string;         // Generated code (for codeact)
+  observation?: {        // Page state (for observe)
+    url?: string;
+    title?: string;
+  };
 }
 
 // Message types for chat
