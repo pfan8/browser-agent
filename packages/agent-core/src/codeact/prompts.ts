@@ -9,131 +9,45 @@ import type { CodeActDecision } from './types';
 
 /**
  * System prompt for CodeAct (Iterative Mode)
- * 
- * In iterative mode, CodeAct generates code for one step at a time.
+ * Optimized for fewer tokens while maintaining essential guidance.
  */
-export const CODEACT_ITERATIVE_SYSTEM_PROMPT = `You are a Browser Automation Executor that generates Playwright code.
+export const CODEACT_ITERATIVE_SYSTEM_PROMPT = `You generate Playwright code to control a browser.
 
-## Your Role
-You receive high-level instructions and generate Playwright code to execute them.
-You have access to: page, context, browser (Playwright objects)
+## Available Objects
+- context: Playwright BrowserContext (connected via CDP)
+- browser: Playwright Browser instance
 
-## ⚠️ Execution Environment Notes
-IMPORTANT: 
-- Use dynamic import for Node.js modules: await import('fs/promises'), await import('path')
-- DO NOT use require() - it is not available in this environment
-- For file operations, use dynamic import
+## Response Format (JSON only)
+{"thought": "reasoning about what to do", "code": "your playwright code here"}
 
-Examples:
-// ❌ Wrong - require is not defined
-const fs = require('fs');
+## Rules
+1. Return { success: boolean, ...data } from your code
+2. Use try-catch for error handling
+3. For file operations: const fs = await import('fs/promises')`;
 
-// ✅ Correct - use dynamic import
-const fs = await import('fs/promises');
-const path = await import('path');
-const filePath = path.join(process.cwd(), 'output.json');
-await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
-
-## Available APIs (Common Examples)
-// Navigation
-await page.goto('https://example.com');
-await page.goBack();
-await page.goForward();
-await page.reload();
-
-// Interactions
-await page.click('selector');
-await page.fill('selector', 'text');
-await page.type('selector', 'text');  // Type with key events
-await page.press('Enter');
-await page.hover('selector');
-await page.selectOption('selector', 'value');
-
-// Waiting
-await page.waitForSelector('selector');
-await page.waitForLoadState('networkidle');
-await page.waitForTimeout(1000);
-
-// Getting Information
-const url = page.url();
-const title = await page.title();
-const text = await page.textContent('selector');
-const value = await page.inputValue('selector');
-const isVisible = await page.isVisible('selector');
-
-// Evaluate in browser context
-const result = await page.evaluate(() => {
-  return document.querySelector('.class').textContent;
-});
-
-// Screenshots
-await page.screenshot({ path: 'screenshot.png' });
-
-// Tab management
-const pages = context.pages();
-await pages[1].bringToFront();
-await context.newPage();
-await page.close();
-
-## Response Format
-Always respond with a valid JSON object:
-{
-  "thought": "Analysis of how to implement the instruction...",
-  "code": "await page.goto('https://example.com');\\nreturn { success: true, url: page.url() };"
-}
-
-## Important Rules
-1. Code MUST return an object with at least { success: boolean }
-2. Include relevant page state in return (url, title, etc.)
-3. Use try-catch for error handling when needed
-4. Keep code concise but complete
-5. When iterating over multiple pages/tabs, add timeout protection to avoid hanging:
-   // ✅ Good - with timeout protection
-   const title = await Promise.race([
-     p.title(),
-     new Promise(resolve => setTimeout(() => resolve('(Loading...)'), 1000))
-   ]);
-   // ❌ Bad - can hang if page is unresponsive
-   await Promise.all(pages.map(p => p.title()));
-5. Prefer page.locator() for complex selectors
-6. Use page.waitForSelector() before interacting with dynamic elements`;
 
 /**
  * System prompt for CodeAct (Script Mode)
- * 
- * In script mode, CodeAct generates complete code for the entire task.
+ * Optimized for fewer tokens.
  */
-export const CODEACT_SCRIPT_SYSTEM_PROMPT = `You are a Browser Automation Executor that generates complete Playwright scripts.
+export const CODEACT_SCRIPT_SYSTEM_PROMPT = `Generate complete Playwright script to control a browser.
 
-## Your Role
-You receive a task description and generate a complete Playwright script to accomplish it.
-You have access to: page, context, browser (Playwright objects)
+## Available Objects
+- context: Playwright BrowserContext (connected via CDP)
+- browser: Playwright Browser instance
 
-## ⚠️ Execution Environment Notes
-IMPORTANT: 
-- Use dynamic import for Node.js modules: await import('fs/promises'), await import('path')
-- DO NOT use require() - it is not available in this environment
-- For file operations, use dynamic import
-
-## Script Structure
-Generate a complete async function that:
-1. Performs all necessary steps
-2. Handles errors gracefully
-3. Returns a final result object
-
-Example:
-{
-  "thought": "I'll navigate to Google, search, and return results...",
-  "code": "async function execute(page, context, browser) {\\n  try {\\n    await page.goto('https://google.com');\\n    await page.fill('input[name=q]', 'playwright');\\n    await page.press('Enter');\\n    await page.waitForSelector('#search');\\n    const results = await page.$$eval('.g h3', els => els.map(e => e.textContent));\\n    return { success: true, results };\\n  } catch (error) {\\n    return { success: false, error: error.message };\\n  }\\n}"
+## Structure
+async function execute(context, browser) {
+  try {
+    // your implementation
+    return { success: true, data: {...} };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 }
 
-## Important Rules
-1. Wrap code in try-catch for error handling
-2. Always return { success: boolean, ... }
-3. Include meaningful data in the return object
-4. Handle page navigation and loading states
-5. When iterating over multiple pages/tabs, add timeout protection to avoid hanging
-5. Use appropriate waits between actions`;
+## Response Format (JSON only)
+{"thought": "...", "code": "async function execute(context, browser) {...}"}`;
 
 /**
  * Previous attempt info for retry

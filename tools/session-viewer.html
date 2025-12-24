@@ -1,0 +1,2599 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session Viewer - Browser Agent</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+    
+    :root {
+      --bg-primary: #0a0e14;
+      --bg-secondary: #131920;
+      --bg-tertiary: #1a2130;
+      --bg-hover: #232d3f;
+      --text-primary: #e6e6e6;
+      --text-secondary: #8b949e;
+      --text-muted: #5c6370;
+      --accent-cyan: #39c5cf;
+      --accent-orange: #ff9f43;
+      --accent-green: #26de81;
+      --accent-red: #ff6b6b;
+      --accent-purple: #a78bfa;
+      --border: #2d3748;
+      --shadow: rgba(0, 0, 0, 0.4);
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Noto Sans SC', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    
+    .container {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    
+    header {
+      background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 2rem;
+      margin-bottom: 2rem;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 20px var(--shadow);
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    
+    .logo-icon {
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+    }
+    
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .upload-section {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+    
+    .file-input-wrapper {
+      position: relative;
+    }
+    
+    .file-input-wrapper input[type="file"] {
+      display: none;
+    }
+    
+    .file-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    
+    .file-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--accent-cyan);
+    }
+    
+    .file-btn.loaded {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+    
+    .help-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: help;
+      position: relative;
+      transition: all 0.2s;
+    }
+    
+    .help-icon:hover {
+      background: var(--bg-hover);
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+    
+    .help-tooltip {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 0.5rem;
+      width: 320px;
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px var(--shadow);
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-8px);
+      transition: all 0.2s;
+      text-align: left;
+      font-weight: normal;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+    
+    .help-icon:hover .help-tooltip {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+    
+    .help-tooltip h4 {
+      color: var(--accent-cyan);
+      margin-bottom: 0.75rem;
+      font-size: 0.9rem;
+    }
+    
+    .help-tooltip ol {
+      margin: 0;
+      padding-left: 1.25rem;
+      color: var(--text-secondary);
+    }
+    
+    .help-tooltip li {
+      margin-bottom: 0.5rem;
+    }
+    
+    .help-tooltip code {
+      background: var(--bg-primary);
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      font-size: 0.8rem;
+      color: var(--accent-orange);
+    }
+    
+    .help-tooltip .shortcut {
+      display: inline-block;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+    }
+    
+    .main-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 1.5rem;
+      height: calc(100vh - 200px);
+    }
+    
+    .sidebar {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .sidebar-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .sidebar-title {
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .tab-buttons {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.75rem;
+      background: var(--bg-tertiary);
+    }
+    
+    .tab-btn {
+      flex: 1;
+      padding: 0.5rem;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .tab-btn.active {
+      background: var(--accent-cyan);
+      color: var(--bg-primary);
+    }
+    
+    .tab-btn:hover:not(.active) {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    
+    .session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+    
+    .session-item {
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+    }
+    
+    .session-item:hover {
+      border-color: var(--border);
+      transform: translateX(4px);
+    }
+    
+    .session-item.active {
+      border-color: var(--accent-cyan);
+      background: var(--bg-hover);
+    }
+    
+    .session-name {
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+      font-size: 0.9rem;
+      word-break: break-all;
+    }
+    
+    .session-meta {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      gap: 1rem;
+    }
+    
+    .session-meta span {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    
+    .content-area {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .content-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .content-title {
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    
+    .content-tabs {
+      display: flex;
+      gap: 0.5rem;
+    }
+    
+    .content-tab {
+      padding: 0.5rem 1rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .content-tab.active {
+      background: var(--accent-purple);
+      border-color: var(--accent-purple);
+      color: white;
+    }
+    
+    .content-body {
+      flex: 1;
+      overflow: auto;
+      padding: 1.5rem;
+    }
+    
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      gap: 1rem;
+    }
+    
+    .empty-state-icon {
+      font-size: 4rem;
+      opacity: 0.3;
+    }
+    
+    .json-viewer {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    
+    .json-key {
+      color: var(--accent-cyan);
+    }
+    
+    .json-string {
+      color: var(--accent-green);
+    }
+    
+    .json-number {
+      color: var(--accent-orange);
+    }
+    
+    .json-boolean {
+      color: var(--accent-purple);
+    }
+    
+    .json-null {
+      color: var(--text-muted);
+    }
+    
+    .json-bracket {
+      color: var(--text-secondary);
+    }
+    
+    .collapsible {
+      cursor: pointer;
+    }
+    
+    .collapsible::before {
+      content: '▼';
+      display: inline-block;
+      width: 1em;
+      margin-right: 0.25rem;
+      font-size: 0.7em;
+      transition: transform 0.2s;
+    }
+    
+    .collapsible.collapsed::before {
+      transform: rotate(-90deg);
+    }
+    
+    .collapsible.collapsed + .json-content {
+      display: none;
+    }
+    
+    .json-content {
+      padding-left: 1.5rem;
+      border-left: 1px solid var(--border);
+      margin-left: 0.5rem;
+    }
+    
+    .message-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    
+    .message-item {
+      padding: 1rem;
+      border-radius: 8px;
+      background: var(--bg-tertiary);
+    }
+    
+    .message-item.human {
+      border-left: 3px solid var(--accent-cyan);
+    }
+    
+    .message-item.ai {
+      border-left: 3px solid var(--accent-purple);
+    }
+    
+    .message-item.tool {
+      border-left: 3px solid var(--accent-orange);
+    }
+    
+    .message-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+    
+    .message-type {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: var(--bg-hover);
+    }
+    
+    .message-type.human {
+      color: var(--accent-cyan);
+    }
+    
+    .message-type.ai {
+      color: var(--accent-purple);
+    }
+    
+    .message-type.tool {
+      color: var(--accent-orange);
+    }
+    
+    .message-content {
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    
+    .action-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    
+    .action-item {
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    
+    .action-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .action-tool {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      background: var(--bg-primary);
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+    }
+    
+    .action-status {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+    }
+    
+    .action-status.success {
+      background: rgba(38, 222, 129, 0.2);
+      color: var(--accent-green);
+    }
+    
+    .action-status.failed {
+      background: rgba(255, 107, 107, 0.2);
+      color: var(--accent-red);
+    }
+    
+    .action-thought {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      font-style: italic;
+      margin-bottom: 0.5rem;
+    }
+    
+    .action-args {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      background: var(--bg-primary);
+      padding: 0.75rem;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    
+    .memory-list {
+      display: grid;
+      gap: 1rem;
+    }
+    
+    .memory-item {
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      border-left: 3px solid var(--accent-orange);
+    }
+    
+    .memory-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+    
+    .memory-namespace {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: var(--bg-hover);
+      color: var(--accent-orange);
+    }
+    
+    .memory-importance {
+      font-size: 0.7rem;
+    }
+    
+    .memory-importance.high, .memory-importance.critical {
+      color: var(--accent-red);
+    }
+    
+    .memory-importance.medium {
+      color: var(--accent-orange);
+    }
+    
+    .memory-importance.low {
+      color: var(--text-muted);
+    }
+    
+    .memory-key {
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+    }
+    
+    .memory-value {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      background: var(--bg-primary);
+      padding: 0.5rem;
+      border-radius: 4px;
+      margin-top: 0.5rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    .stat-card {
+      background: var(--bg-tertiary);
+      padding: 1.25rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      margin-bottom: 0.25rem;
+    }
+    
+    .stat-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    
+    .search-box {
+      padding: 0.75rem 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      width: calc(100% - 1rem);
+      margin: 0 0.5rem 0.5rem 0.5rem;
+      outline: none;
+    }
+    
+    .search-box:focus {
+      border-color: var(--accent-cyan);
+    }
+    
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 1.5rem;
+      height: 1.25rem;
+      padding: 0 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      border-radius: 999px;
+      background: var(--accent-cyan);
+      color: var(--bg-primary);
+    }
+    
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+    
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+    
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent-cyan);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .observation-card {
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    
+    .observation-url {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: var(--accent-cyan);
+      word-break: break-all;
+    }
+    
+    .observation-title {
+      font-weight: 600;
+      margin-top: 0.5rem;
+    }
+
+    .db-path-hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
+
+    .plan-step {
+      padding: 0.75rem;
+      background: var(--bg-tertiary);
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      border-left: 3px solid var(--border);
+    }
+
+    .plan-step.completed {
+      border-left-color: var(--accent-green);
+    }
+
+    .plan-step.in_progress {
+      border-left-color: var(--accent-cyan);
+    }
+
+    .plan-step.failed {
+      border-left-color: var(--accent-red);
+    }
+
+    .plan-step-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .plan-step-index {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      background: var(--bg-hover);
+      color: var(--text-muted);
+    }
+
+    .plan-step-status {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+    }
+
+    .plan-step-status.completed {
+      background: rgba(38, 222, 129, 0.2);
+      color: var(--accent-green);
+    }
+
+    .plan-step-status.in_progress {
+      background: rgba(57, 197, 207, 0.2);
+      color: var(--accent-cyan);
+    }
+
+    .plan-step-status.pending {
+      background: var(--bg-hover);
+      color: var(--text-muted);
+    }
+
+    .plan-step-status.failed {
+      background: rgba(255, 107, 107, 0.2);
+      color: var(--accent-red);
+    }
+
+    .plan-step-desc {
+      font-size: 0.85rem;
+      color: var(--text-primary);
+    }
+
+    /* Raw data styles */
+    .raw-data-section {
+      margin-bottom: 1.5rem;
+    }
+
+    .raw-data-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .raw-data-title {
+      font-weight: 600;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .sql-input-wrapper {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .sql-input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    .sql-input:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .sql-run-btn {
+      padding: 0.75rem 1.25rem;
+      background: var(--accent-cyan);
+      border: none;
+      border-radius: 8px;
+      color: var(--bg-primary);
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .sql-run-btn:hover {
+      opacity: 0.9;
+    }
+
+    .sql-run-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .db-select {
+      padding: 0.75rem 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .db-select:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .data-table-wrapper {
+      overflow-x: auto;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    .data-table th {
+      background: var(--bg-primary);
+      padding: 0.75rem 1rem;
+      text-align: left;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .data-table td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .data-table tr:hover td {
+      background: var(--bg-hover);
+    }
+
+    .data-table td.expandable {
+      cursor: pointer;
+      position: relative;
+    }
+
+    .data-table td.expandable:hover {
+      white-space: normal;
+      word-break: break-all;
+    }
+
+    .table-info {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .table-card {
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+
+    .table-card:hover {
+      border-color: var(--accent-cyan);
+    }
+
+    .table-card-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+    }
+
+    .table-card-info {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .quick-queries {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .quick-query-btn {
+      padding: 0.4rem 0.75rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .quick-query-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--accent-cyan);
+      color: var(--text-primary);
+    }
+
+    .cell-json {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: var(--accent-green);
+    }
+
+    .cell-null {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .row-count {
+      color: var(--accent-orange);
+      font-weight: 600;
+    }
+
+    /* JSON Modal styles */
+    .json-modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s;
+    }
+
+    .json-modal-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .json-modal {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 90%;
+      max-width: 900px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .json-modal-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .json-modal-title {
+      font-weight: 600;
+      color: var(--accent-cyan);
+    }
+
+    .json-modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .json-modal-close:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .json-modal-toolbar {
+      padding: 0.75rem 1.5rem;
+      background: var(--bg-tertiary);
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .json-toolbar-btn {
+      padding: 0.4rem 0.75rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .json-toolbar-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--accent-cyan);
+      color: var(--text-primary);
+    }
+
+    .json-modal-body {
+      flex: 1;
+      overflow: auto;
+      padding: 1.5rem;
+    }
+
+    .json-tree {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+
+    .json-tree-item {
+      position: relative;
+      padding-left: 1.25rem;
+    }
+
+    .json-tree-toggle {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1rem;
+      height: 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 0.65rem;
+      user-select: none;
+    }
+
+    .json-tree-toggle:hover {
+      color: var(--accent-cyan);
+    }
+
+    .json-tree-toggle.collapsed {
+      transform: rotate(-90deg);
+    }
+
+    .json-tree-content {
+      margin-left: 0.5rem;
+      border-left: 1px solid var(--border);
+      padding-left: 1rem;
+    }
+
+    .json-tree-content.collapsed {
+      display: none;
+    }
+
+    .json-tree-key {
+      color: var(--accent-cyan);
+    }
+
+    .json-tree-colon {
+      color: var(--text-muted);
+      margin: 0 0.25rem;
+    }
+
+    .json-tree-string {
+      color: var(--accent-green);
+    }
+
+    .json-tree-number {
+      color: var(--accent-orange);
+    }
+
+    .json-tree-boolean {
+      color: var(--accent-purple);
+    }
+
+    .json-tree-null {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .json-tree-bracket {
+      color: var(--text-secondary);
+    }
+
+    .json-tree-type-badge {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      background: var(--bg-hover);
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+    }
+
+    .json-tree-preview {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      margin-left: 0.5rem;
+    }
+
+    .json-cell-btn {
+      padding: 0.2rem 0.5rem;
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--accent-cyan);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .json-cell-btn:hover {
+      background: var(--accent-cyan);
+      color: var(--bg-primary);
+    }
+
+    .json-search-input {
+      padding: 0.4rem 0.75rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 0.8rem;
+      outline: none;
+      width: 200px;
+    }
+
+    .json-search-input:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .json-highlight {
+      background: rgba(255, 159, 67, 0.3);
+      border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <div class="logo-icon">🔍</div>
+        <div>
+          <h1>Session Viewer</h1>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Browser Agent 数据查看器</div>
+        </div>
+      </div>
+      <div class="upload-section">
+        <div class="file-input-wrapper">
+          <input type="file" id="checkpointsFile" accept=".db,.sqlite" />
+          <label for="checkpointsFile" class="file-btn" id="checkpointsLabel">
+            📁 加载 checkpoints.db
+          </label>
+        </div>
+        <div class="file-input-wrapper">
+          <input type="file" id="memoryFile" accept=".db,.sqlite" />
+          <label for="memoryFile" class="file-btn" id="memoryLabel">
+            🧠 加载 memory.db
+          </label>
+        </div>
+        <div class="help-icon">
+          ?
+          <div class="help-tooltip">
+            <h4>📖 如何加载数据库文件</h4>
+            <ol>
+              <li>点击下方 <code>复制路径</code> 按钮复制数据库目录</li>
+              <li>点击 <code>加载 checkpoints.db</code> 按钮</li>
+              <li>在文件选择器中按 <span class="shortcut">⌘</span> + <span class="shortcut">⇧</span> + <span class="shortcut">G</span></li>
+              <li>粘贴路径并按回车跳转到目录</li>
+              <li>选择 <code>checkpoints.db</code> 文件</li>
+              <li>同样方式加载 <code>memory.db</code> 查看记忆数据</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </header>
+    
+    <div class="db-path-hint" style="margin-bottom: 1rem; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.75rem; flex-wrap: wrap;">
+      <span>💡 数据库路径:</span>
+      <code id="dbPath" style="background: var(--bg-tertiary); padding: 0.25rem 0.5rem; border-radius: 4px; cursor: pointer;" title="点击复制路径">~/Library/Application Support/chat-browser-agent/data/</code>
+      <button id="copyPathBtn" class="file-btn" style="padding: 0.4rem 0.75rem; font-size: 0.75rem;">📋 复制路径</button>
+      <button id="openFinderBtn" class="file-btn" style="padding: 0.4rem 0.75rem; font-size: 0.75rem;">📂 在Finder中打开</button>
+    </div>
+    
+    <div class="main-grid">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-title">
+            📋 数据列表
+          </span>
+          <span class="badge" id="itemCount">0</span>
+        </div>
+        <div class="tab-buttons">
+          <button class="tab-btn active" data-tab="sessions">Sessions</button>
+          <button class="tab-btn" data-tab="memories">Memories</button>
+          <button class="tab-btn" data-tab="raw">原始数据</button>
+        </div>
+        <input type="text" class="search-box" placeholder="搜索..." id="searchInput" />
+        <div class="session-list" id="itemList">
+          <div class="empty-state">
+            <div class="empty-state-icon">📂</div>
+            <div>请加载数据库文件</div>
+          </div>
+        </div>
+      </aside>
+      
+      <main class="content-area">
+        <div class="content-header">
+          <span class="content-title" id="contentTitle">选择一个项目查看详情</span>
+          <div class="content-tabs" id="contentTabs">
+            <!-- Dynamic tabs -->
+          </div>
+        </div>
+        <div class="content-body" id="contentBody">
+          <div class="empty-state">
+            <div class="empty-state-icon">👈</div>
+            <div>从左侧列表选择一个项目</div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+  
+  <!-- JSON Modal -->
+  <div class="json-modal-overlay" id="jsonModal">
+    <div class="json-modal">
+      <div class="json-modal-header">
+        <span class="json-modal-title" id="jsonModalTitle">JSON 查看器</span>
+        <button class="json-modal-close" id="jsonModalClose">×</button>
+      </div>
+      <div class="json-modal-toolbar">
+        <button class="json-toolbar-btn" id="expandAllBtn">📂 全部展开</button>
+        <button class="json-toolbar-btn" id="collapseAllBtn">📁 全部折叠</button>
+        <button class="json-toolbar-btn" id="copyJsonBtn">📋 复制JSON</button>
+        <input type="text" class="json-search-input" id="jsonSearchInput" placeholder="搜索键名..." />
+      </div>
+      <div class="json-modal-body">
+        <div class="json-tree" id="jsonTreeContent"></div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // Global state
+    let checkpointsDb = null;
+    let memoryDb = null;
+    let currentTab = 'sessions';
+    let selectedItem = null;
+    let sessionsData = [];
+    let memoriesData = [];
+    
+    // Initialize sql.js
+    let SQL = null;
+    let sqlJsReady = false;
+    
+    async function loadSqlJs() {
+      try {
+        SQL = await initSqlJs({
+          locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+        });
+        sqlJsReady = true;
+        console.log('sql.js initialized successfully');
+        // Update UI to show ready state
+        document.getElementById('checkpointsLabel').style.opacity = '1';
+        document.getElementById('memoryLabel').style.opacity = '1';
+      } catch (error) {
+        console.error('Failed to initialize sql.js:', error);
+        alert('sql.js 加载失败，请刷新页面重试');
+      }
+    }
+    
+    // Start loading sql.js
+    loadSqlJs();
+    
+    // Disable buttons until sql.js is ready
+    document.getElementById('checkpointsLabel').style.opacity = '0.5';
+    document.getElementById('memoryLabel').style.opacity = '0.5';
+    
+    // Database path
+    const DB_PATH = '~/Library/Application Support/chat-browser-agent/data/';
+    
+    // Copy path button
+    document.getElementById('copyPathBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(DB_PATH);
+        const btn = document.getElementById('copyPathBtn');
+        const originalText = btn.textContent;
+        btn.textContent = '✓ 已复制';
+        btn.classList.add('loaded');
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.classList.remove('loaded');
+        }, 2000);
+      } catch (e) {
+        // Fallback
+        prompt('复制以下路径:', DB_PATH);
+      }
+    });
+    
+    // Open in Finder button
+    document.getElementById('openFinderBtn').addEventListener('click', async () => {
+      const cmd = 'open ~/Library/Application\\ Support/chat-browser-agent/data/';
+      try {
+        await navigator.clipboard.writeText(cmd);
+        alert('终端命令已复制！\n\n请在终端中粘贴运行:\n' + cmd + '\n\n或在Finder中按 Cmd+Shift+G 并粘贴路径');
+      } catch (e) {
+        prompt('请复制此命令到终端运行:', cmd);
+      }
+    });
+    
+    // Click on path to copy
+    document.getElementById('dbPath').addEventListener('click', () => {
+      document.getElementById('copyPathBtn').click();
+    });
+    
+    // File input handlers
+    document.getElementById('checkpointsFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      if (!sqlJsReady || !SQL) {
+        alert('sql.js 正在加载中，请稍候再试...');
+        return;
+      }
+      
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        checkpointsDb = new SQL.Database(uint8Array);
+        document.getElementById('checkpointsLabel').classList.add('loaded');
+        document.getElementById('checkpointsLabel').textContent = `✓ ${file.name}`;
+        loadSessionsData();
+      } catch (error) {
+        alert('加载数据库失败: ' + error.message);
+        console.error(error);
+      }
+    });
+    
+    document.getElementById('memoryFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      if (!sqlJsReady || !SQL) {
+        alert('sql.js 正在加载中，请稍候再试...');
+        return;
+      }
+      
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        memoryDb = new SQL.Database(uint8Array);
+        document.getElementById('memoryLabel').classList.add('loaded');
+        document.getElementById('memoryLabel').textContent = `✓ ${file.name}`;
+        loadMemoriesData();
+      } catch (error) {
+        alert('加载数据库失败: ' + error.message);
+        console.error(error);
+      }
+    });
+    
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentTab = btn.dataset.tab;
+        
+        // Handle raw data tab differently
+        if (currentTab === 'raw') {
+          renderRawDataView();
+          return;
+        }
+        
+        renderItemList();
+        // Clear selection
+        selectedItem = null;
+        document.getElementById('contentTitle').textContent = '选择一个项目查看详情';
+        document.getElementById('contentBody').innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">👈</div>
+            <div>从左侧列表选择一个项目</div>
+          </div>
+        `;
+        document.getElementById('contentTabs').innerHTML = '';
+      });
+    });
+    
+    // Search
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      renderItemList(e.target.value);
+    });
+    
+    // Load sessions data
+    function loadSessionsData() {
+      if (!checkpointsDb) return;
+      
+      try {
+        // Get all threads
+        const threadsResult = checkpointsDb.exec(`
+          SELECT thread_id, name, description, message_count, created_at, updated_at 
+          FROM threads ORDER BY updated_at DESC
+        `);
+        
+        if (threadsResult.length === 0) {
+          sessionsData = [];
+          renderItemList();
+          return;
+        }
+        
+        const columns = threadsResult[0].columns;
+        const values = threadsResult[0].values;
+        
+        sessionsData = values.map(row => {
+          const obj = {};
+          columns.forEach((col, i) => {
+            obj[col] = row[i];
+          });
+          
+          // Try to get state
+          try {
+            const stateResult = checkpointsDb.exec(`
+              SELECT state_json FROM thread_state WHERE thread_id = ?
+            `, [obj.thread_id]);
+            
+            if (stateResult.length > 0 && stateResult[0].values.length > 0) {
+              try {
+                obj.state = JSON.parse(stateResult[0].values[0][0]);
+              } catch (e) {
+                obj.state = null;
+              }
+            }
+          } catch (e) {
+            obj.state = null;
+          }
+          
+          return obj;
+        });
+        
+        renderItemList();
+      } catch (error) {
+        console.error('Error loading sessions:', error);
+        alert('加载sessions失败: ' + error.message);
+      }
+    }
+    
+    // Load memories data
+    function loadMemoriesData() {
+      if (!memoryDb) return;
+      
+      try {
+        const result = memoryDb.exec(`
+          SELECT * FROM memories ORDER BY updated_at DESC
+        `);
+        
+        if (result.length === 0) {
+          memoriesData = [];
+          renderItemList();
+          return;
+        }
+        
+        const columns = result[0].columns;
+        const values = result[0].values;
+        
+        memoriesData = values.map(row => {
+          const obj = {};
+          columns.forEach((col, i) => {
+            obj[col] = row[i];
+          });
+          
+          // Parse JSON fields
+          if (obj.value_json) {
+            try { obj.value = JSON.parse(obj.value_json); } catch(e) { obj.value = obj.value_json; }
+          }
+          if (obj.tags_json) {
+            try { obj.tags = JSON.parse(obj.tags_json); } catch(e) { obj.tags = []; }
+          }
+          
+          return obj;
+        });
+        
+        renderItemList();
+      } catch (error) {
+        console.error('Error loading memories:', error);
+        alert('加载memories失败: ' + error.message);
+      }
+    }
+    
+    // Render item list
+    function renderItemList(searchQuery = '') {
+      const container = document.getElementById('itemList');
+      const countBadge = document.getElementById('itemCount');
+      
+      let items = currentTab === 'sessions' ? sessionsData : memoriesData;
+      
+      // Filter by search
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        items = items.filter(item => {
+          if (currentTab === 'sessions') {
+            return (item.name || '').toLowerCase().includes(query) ||
+                   (item.thread_id || '').toLowerCase().includes(query) ||
+                   (item.description || '').toLowerCase().includes(query) ||
+                   (item.state?.goal || '').toLowerCase().includes(query);
+          } else {
+            return (item.key || '').toLowerCase().includes(query) ||
+                   (item.namespace || '').toLowerCase().includes(query) ||
+                   JSON.stringify(item.value).toLowerCase().includes(query);
+          }
+        });
+      }
+      
+      countBadge.textContent = items.length;
+      
+      if (items.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">${currentTab === 'sessions' ? '📋' : '🧠'}</div>
+            <div>${searchQuery ? '未找到匹配项' : '暂无数据'}</div>
+          </div>
+        `;
+        return;
+      }
+      
+      if (currentTab === 'sessions') {
+        container.innerHTML = items.map(session => `
+          <div class="session-item ${selectedItem === session.thread_id ? 'active' : ''}" 
+               data-id="${session.thread_id}">
+            <div class="session-name">${session.name || session.state?.goal || session.thread_id}</div>
+            <div class="session-meta">
+              <span>💬 ${session.message_count || 0}</span>
+              <span>📅 ${formatDate(session.updated_at)}</span>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        container.innerHTML = items.map(memory => `
+          <div class="session-item ${selectedItem === memory.id ? 'active' : ''}" 
+               data-id="${memory.id}">
+            <div class="session-name">${memory.key}</div>
+            <div class="session-meta">
+              <span>📁 ${memory.namespace}</span>
+              <span>⭐ ${memory.importance_level}</span>
+            </div>
+          </div>
+        `).join('');
+      }
+      
+      // Add click handlers
+      container.querySelectorAll('.session-item').forEach(el => {
+        el.addEventListener('click', () => {
+          selectedItem = el.dataset.id;
+          renderItemList(document.getElementById('searchInput').value);
+          
+          if (currentTab === 'sessions') {
+            const session = sessionsData.find(s => s.thread_id === selectedItem);
+            renderSessionDetail(session);
+          } else {
+            const memory = memoriesData.find(m => m.id === selectedItem);
+            renderMemoryDetail(memory);
+          }
+        });
+      });
+    }
+    
+    // Render session detail
+    function renderSessionDetail(session) {
+      if (!session) return;
+      
+      document.getElementById('contentTitle').textContent = session.name || session.state?.goal || session.thread_id;
+      
+      // Render tabs
+      const tabs = ['概览', '消息', '动作', '计划', '状态'];
+      document.getElementById('contentTabs').innerHTML = tabs.map((tab, i) => `
+        <button class="content-tab ${i === 0 ? 'active' : ''}" data-detail-tab="${tab}">${tab}</button>
+      `).join('');
+      
+      // Add tab handlers
+      document.querySelectorAll('.content-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.content-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          renderSessionTab(session, btn.dataset.detailTab);
+        });
+      });
+      
+      renderSessionTab(session, '概览');
+    }
+    
+    // Render session tab content
+    function renderSessionTab(session, tab) {
+      const container = document.getElementById('contentBody');
+      const state = session.state || {};
+      
+      switch(tab) {
+        case '概览':
+          container.innerHTML = `
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-value">${state.iterationCount || 0}</div>
+                <div class="stat-label">迭代次数</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value">${(state.actionHistory || []).length}</div>
+                <div class="stat-label">执行动作</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value">${(state.messages || []).length}</div>
+                <div class="stat-label">消息数量</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value">${state.consecutiveFailures || 0}</div>
+                <div class="stat-label">连续失败</div>
+              </div>
+            </div>
+            
+            <div class="observation-card">
+              <div style="font-weight: 600; margin-bottom: 0.5rem;">🎯 目标</div>
+              <div style="color: var(--accent-cyan);">${state.goal || '无'}</div>
+              ${state.originalGoal && state.originalGoal !== state.goal ? `
+                <div style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-muted);">
+                  原始目标: ${state.originalGoal}
+                </div>
+              ` : ''}
+            </div>
+            
+            <div class="observation-card">
+              <div style="font-weight: 600; margin-bottom: 0.5rem;">📊 状态</div>
+              <div>
+                <span style="color: ${getStatusColor(state.status)}">${state.status || 'unknown'}</span>
+                ${state.isComplete ? '<span style="color: var(--accent-green); margin-left: 0.5rem;">✓ 已完成</span>' : ''}
+                ${state.loopDetected ? '<span style="color: var(--accent-red); margin-left: 0.5rem;">⚠ 检测到循环</span>' : ''}
+              </div>
+            </div>
+            
+            ${state.observation ? `
+              <div class="observation-card">
+                <div style="font-weight: 600; margin-bottom: 0.5rem;">🌐 当前页面</div>
+                <div class="observation-url">${state.observation.url}</div>
+                <div class="observation-title">${state.observation.title || ''}</div>
+                ${state.observation.loadState ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">加载状态: ${state.observation.loadState}</div>` : ''}
+              </div>
+            ` : ''}
+            
+            ${state.currentInstruction ? `
+              <div class="observation-card">
+                <div style="font-weight: 600; margin-bottom: 0.5rem;">📝 当前指令</div>
+                <div style="color: var(--accent-purple);">${state.currentInstruction}</div>
+              </div>
+            ` : ''}
+            
+            ${state.result ? `
+              <div class="observation-card">
+                <div style="font-weight: 600; margin-bottom: 0.5rem;">✅ 结果</div>
+                <div style="color: var(--accent-green); white-space: pre-wrap;">${state.result}</div>
+              </div>
+            ` : ''}
+            
+            ${state.error ? `
+              <div class="observation-card" style="border-left: 3px solid var(--accent-red);">
+                <div style="font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-red);">❌ 错误</div>
+                <div style="color: var(--accent-red);">${state.error}</div>
+              </div>
+            ` : ''}
+            
+            <div class="observation-card">
+              <div style="font-weight: 600; margin-bottom: 0.5rem;">ℹ️ 会话信息</div>
+              <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                <div>Thread ID: <code>${session.thread_id}</code></div>
+                <div>创建时间: ${session.created_at}</div>
+                <div>更新时间: ${session.updated_at}</div>
+                <div>执行模式: ${state.executionMode || 'iterative'}</div>
+              </div>
+            </div>
+          `;
+          break;
+          
+        case '消息':
+          const messages = state.messages || [];
+          if (messages.length === 0) {
+            container.innerHTML = '<div class="empty-state"><div>暂无消息</div></div>';
+            return;
+          }
+          container.innerHTML = `
+            <div class="message-list">
+              ${messages.map((msg, idx) => {
+                const type = getMessageType(msg);
+                return `
+                  <div class="message-item ${type}">
+                    <div class="message-header">
+                      <span class="message-type ${type}">#${idx + 1} ${type}</span>
+                    </div>
+                    <div class="message-content">${escapeHtml(getMessageContent(msg))}</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `;
+          break;
+          
+        case '动作':
+          const actions = state.actionHistory || [];
+          if (actions.length === 0) {
+            container.innerHTML = '<div class="empty-state"><div>暂无动作记录</div></div>';
+            return;
+          }
+          container.innerHTML = `
+            <div class="action-list">
+              ${actions.map((action, idx) => `
+                <div class="action-item">
+                  <div class="action-header">
+                    <span style="color: var(--text-muted); font-size: 0.75rem;">#${idx + 1}</span>
+                    <span class="action-tool">${action.tool}</span>
+                    ${action.result ? `
+                      <span class="action-status ${action.result.success ? 'success' : 'failed'}">
+                        ${action.result.success ? '✓ 成功' : '✗ 失败'}
+                        ${action.result.duration ? `(${action.result.duration}ms)` : ''}
+                      </span>
+                    ` : ''}
+                  </div>
+                  ${action.thought ? `<div class="action-thought">"${escapeHtml(action.thought)}"</div>` : ''}
+                  ${action.reasoning ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;">推理: ${escapeHtml(action.reasoning)}</div>` : ''}
+                  <div class="action-args">${JSON.stringify(action.args, null, 2)}</div>
+                  ${action.result?.error ? `
+                    <div style="color: var(--accent-red); margin-top: 0.5rem; font-size: 0.85rem;">
+                      错误: ${escapeHtml(action.result.error)}
+                    </div>
+                  ` : ''}
+                  ${action.result?.data ? `
+                    <div style="margin-top: 0.5rem; font-size: 0.85rem;">
+                      <details>
+                        <summary style="cursor: pointer; color: var(--text-muted);">查看返回数据</summary>
+                        <pre class="action-args" style="margin-top: 0.5rem;">${JSON.stringify(action.result.data, null, 2)}</pre>
+                      </details>
+                    </div>
+                  ` : ''}
+                </div>
+              `).join('')}
+            </div>
+          `;
+          break;
+          
+        case '计划':
+          const plan = state.plan;
+          if (!plan) {
+            container.innerHTML = '<div class="empty-state"><div>暂无执行计划</div></div>';
+            return;
+          }
+          container.innerHTML = `
+            <div class="observation-card">
+              <div style="font-weight: 600; margin-bottom: 0.5rem;">📋 计划信息</div>
+              <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                <div>目标: <span style="color: var(--accent-cyan);">${plan.goal}</span></div>
+                <div>状态: <span style="color: ${getStatusColor(plan.status)}">${plan.status}</span></div>
+                <div>当前步骤: ${plan.currentStepIndex + 1} / ${plan.steps?.length || 0}</div>
+              </div>
+            </div>
+            
+            <div style="font-weight: 600; margin-bottom: 0.75rem;">📝 执行步骤</div>
+            ${(plan.steps || []).map((step, idx) => `
+              <div class="plan-step ${step.status}">
+                <div class="plan-step-header">
+                  <span class="plan-step-index">${idx + 1}</span>
+                  <span class="plan-step-status ${step.status}">${getStepStatusLabel(step.status)}</span>
+                  ${step.tool ? `<span class="action-tool" style="font-size: 0.7rem; padding: 0.1rem 0.3rem;">${step.tool}</span>` : ''}
+                </div>
+                <div class="plan-step-desc">${escapeHtml(step.description)}</div>
+                ${step.result?.error ? `
+                  <div style="color: var(--accent-red); font-size: 0.8rem; margin-top: 0.25rem;">
+                    错误: ${escapeHtml(step.result.error)}
+                  </div>
+                ` : ''}
+              </div>
+            `).join('')}
+          `;
+          break;
+          
+        case '状态':
+          container.innerHTML = `
+            <div class="json-viewer">
+              ${renderJson(state)}
+            </div>
+          `;
+          
+          // Add collapsible functionality
+          container.querySelectorAll('.collapsible').forEach(el => {
+            el.addEventListener('click', (e) => {
+              e.stopPropagation();
+              el.classList.toggle('collapsed');
+            });
+          });
+          break;
+      }
+    }
+    
+    // Render memory detail
+    function renderMemoryDetail(memory) {
+      if (!memory) return;
+      
+      document.getElementById('contentTitle').textContent = memory.key;
+      document.getElementById('contentTabs').innerHTML = '';
+      
+      const container = document.getElementById('contentBody');
+      container.innerHTML = `
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" style="font-size: 1.5rem;">${memory.namespace}</div>
+            <div class="stat-label">命名空间</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" style="font-size: 1.5rem;">${memory.importance_level}</div>
+            <div class="stat-label">重要性</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">${memory.access_count || 0}</div>
+            <div class="stat-label">访问次数</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" style="font-size: 1rem;">${memory.importance || 0}</div>
+            <div class="stat-label">重要性分数</div>
+          </div>
+        </div>
+        
+        <div class="observation-card">
+          <div style="font-weight: 600; margin-bottom: 0.5rem;">🔑 键</div>
+          <code style="color: var(--accent-cyan);">${memory.key}</code>
+        </div>
+        
+        <div class="observation-card">
+          <div style="font-weight: 600; margin-bottom: 0.5rem;">📝 值</div>
+          <div class="json-viewer">
+            ${renderJson(memory.value)}
+          </div>
+        </div>
+        
+        <div class="observation-card">
+          <div style="font-weight: 600; margin-bottom: 0.5rem;">📦 来源</div>
+          <div style="color: var(--text-secondary);">${memory.source || 'unknown'}</div>
+        </div>
+        
+        ${memory.tags && memory.tags.length > 0 ? `
+          <div class="observation-card">
+            <div style="font-weight: 600; margin-bottom: 0.5rem;">🏷️ 标签</div>
+            <div>${memory.tags.map(t => `<span class="badge" style="margin-right: 0.25rem;">${t}</span>`).join('')}</div>
+          </div>
+        ` : ''}
+        
+        <div class="observation-card">
+          <div style="font-weight: 600; margin-bottom: 0.5rem;">📅 时间信息</div>
+          <div style="font-size: 0.85rem; color: var(--text-secondary);">
+            <div>创建: ${memory.created_at}</div>
+            <div>更新: ${memory.updated_at}</div>
+            <div>最后访问: ${memory.last_accessed_at}</div>
+            ${memory.expires_at ? `<div>过期: ${memory.expires_at}</div>` : ''}
+          </div>
+        </div>
+        
+        <div class="observation-card">
+          <div style="font-weight: 600; margin-bottom: 0.5rem;">🆔 ID</div>
+          <code style="font-size: 0.8rem; color: var(--text-muted);">${memory.id}</code>
+        </div>
+      `;
+      
+      // Add collapsible functionality
+      container.querySelectorAll('.collapsible').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          el.classList.toggle('collapsed');
+        });
+      });
+    }
+    
+    // Helper functions
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      try {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString('zh-CN', { 
+          month: 'short', 
+          day: 'numeric', 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+      } catch (e) {
+        return dateStr;
+      }
+    }
+    
+    function getStatusColor(status) {
+      switch(status) {
+        case 'complete':
+        case 'completed':
+          return 'var(--accent-green)';
+        case 'error':
+        case 'failed':
+          return 'var(--accent-red)';
+        case 'idle':
+        case 'pending':
+          return 'var(--text-muted)';
+        case 'in_progress':
+        case 'executing':
+        case 'planning':
+        case 'observing':
+          return 'var(--accent-cyan)';
+        default:
+          return 'var(--accent-cyan)';
+      }
+    }
+    
+    function getStepStatusLabel(status) {
+      switch(status) {
+        case 'completed': return '✓ 完成';
+        case 'in_progress': return '⏳ 执行中';
+        case 'failed': return '✗ 失败';
+        case 'skipped': return '⏭ 跳过';
+        case 'pending':
+        default:
+          return '○ 待执行';
+      }
+    }
+    
+    function getMessageType(msg) {
+      if (!msg) return 'unknown';
+      // Direct type property
+      if (msg.type === 'human') return 'human';
+      if (msg.type === 'ai') return 'ai';
+      if (msg.type === 'tool') return 'tool';
+      // LangChain serialized format
+      if (msg.lc_kwargs?.type === 'human') return 'human';
+      if (msg.lc_kwargs?.type === 'ai') return 'ai';
+      if (msg.lc_kwargs?.type === 'tool') return 'tool';
+      // Check id array for type
+      if (msg.lc === 1 && Array.isArray(msg.id)) {
+        const idStr = msg.id.join('');
+        if (idStr.includes('HumanMessage')) return 'human';
+        if (idStr.includes('AIMessage')) return 'ai';
+        if (idStr.includes('ToolMessage')) return 'tool';
+      }
+      return 'unknown';
+    }
+    
+    function getMessageContent(msg) {
+      if (!msg) return '';
+      // Try various content locations
+      if (typeof msg.content === 'string') return msg.content;
+      if (typeof msg.lc_kwargs?.content === 'string') return msg.lc_kwargs.content;
+      if (msg.text) return msg.text;
+      // For tool messages with complex content
+      if (Array.isArray(msg.content)) {
+        return msg.content.map(c => {
+          if (typeof c === 'string') return c;
+          if (c.text) return c.text;
+          return JSON.stringify(c);
+        }).join('\n');
+      }
+      return JSON.stringify(msg, null, 2);
+    }
+    
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      if (typeof str !== 'string') str = String(str);
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+    
+    function renderJson(obj, depth = 0) {
+      if (obj === null) return '<span class="json-null">null</span>';
+      if (obj === undefined) return '<span class="json-null">undefined</span>';
+      
+      const type = typeof obj;
+      
+      if (type === 'string') {
+        const escaped = escapeHtml(obj);
+        if (escaped.length > 300) {
+          return `<span class="json-string">"${escaped.substring(0, 300)}..."</span>`;
+        }
+        return `<span class="json-string">"${escaped}"</span>`;
+      }
+      if (type === 'number') return `<span class="json-number">${obj}</span>`;
+      if (type === 'boolean') return `<span class="json-boolean">${obj}</span>`;
+      
+      if (Array.isArray(obj)) {
+        if (obj.length === 0) return '<span class="json-bracket">[]</span>';
+        if (depth > 4) return `<span class="json-bracket">[${obj.length} items]</span>`;
+        
+        const items = obj.map((item, i) => `<div>${i}: ${renderJson(item, depth + 1)}</div>`).join('');
+        return `
+          <span class="collapsible ${depth > 1 ? 'collapsed' : ''}">Array(${obj.length})</span>
+          <div class="json-content">${items}</div>
+        `;
+      }
+      
+      if (type === 'object') {
+        const keys = Object.keys(obj);
+        if (keys.length === 0) return '<span class="json-bracket">{}</span>';
+        if (depth > 4) return `<span class="json-bracket">{${keys.length} keys}</span>`;
+        
+        const entries = keys.map(key => {
+          return `<div><span class="json-key">${escapeHtml(key)}</span>: ${renderJson(obj[key], depth + 1)}</div>`;
+        }).join('');
+        
+        return `
+          <span class="collapsible ${depth > 1 ? 'collapsed' : ''}">Object {${keys.length}}</span>
+          <div class="json-content">${entries}</div>
+        `;
+      }
+      
+      return escapeHtml(String(obj));
+    }
+
+    // ============ Raw Data View Functions ============
+    
+    // Render raw data view
+    function renderRawDataView() {
+      const sidebar = document.getElementById('itemList');
+      const countBadge = document.getElementById('itemCount');
+      
+      // Get table info from both databases
+      const tables = [];
+      
+      if (checkpointsDb) {
+        try {
+          const result = checkpointsDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+          if (result.length > 0) {
+            result[0].values.forEach(row => {
+              const countResult = checkpointsDb.exec(`SELECT COUNT(*) FROM "${row[0]}"`);
+              const count = countResult.length > 0 ? countResult[0].values[0][0] : 0;
+              tables.push({ db: 'checkpoints', name: row[0], count });
+            });
+          }
+        } catch (e) {
+          console.error('Error getting checkpoints tables:', e);
+        }
+      }
+      
+      if (memoryDb) {
+        try {
+          const result = memoryDb.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+          if (result.length > 0) {
+            result[0].values.forEach(row => {
+              const countResult = memoryDb.exec(`SELECT COUNT(*) FROM "${row[0]}"`);
+              const count = countResult.length > 0 ? countResult[0].values[0][0] : 0;
+              tables.push({ db: 'memory', name: row[0], count });
+            });
+          }
+        } catch (e) {
+          console.error('Error getting memory tables:', e);
+        }
+      }
+      
+      countBadge.textContent = tables.length;
+      
+      if (tables.length === 0) {
+        sidebar.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">💾</div>
+            <div>请先加载数据库文件</div>
+          </div>
+        `;
+        document.getElementById('contentTitle').textContent = '原始数据查看';
+        document.getElementById('contentTabs').innerHTML = '';
+        document.getElementById('contentBody').innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <div>加载数据库后可查看原始表数据</div>
+          </div>
+        `;
+        return;
+      }
+      
+      // Render table list in sidebar
+      sidebar.innerHTML = tables.map(table => `
+        <div class="table-card" data-db="${table.db}" data-table="${table.name}">
+          <div class="table-card-name">📋 ${table.name}</div>
+          <div class="table-card-info">
+            <span style="color: var(--accent-${table.db === 'checkpoints' ? 'cyan' : 'orange'});">${table.db}</span>
+            · <span class="row-count">${table.count}</span> 行
+          </div>
+        </div>
+      `).join('');
+      
+      // Add click handlers for table cards
+      sidebar.querySelectorAll('.table-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const db = card.dataset.db;
+          const tableName = card.dataset.table;
+          renderTableData(db, tableName);
+          
+          // Highlight selected
+          sidebar.querySelectorAll('.table-card').forEach(c => c.style.borderColor = 'var(--border)');
+          card.style.borderColor = 'var(--accent-cyan)';
+        });
+      });
+      
+      // Show SQL query interface in content area
+      document.getElementById('contentTitle').textContent = '原始数据查看';
+      document.getElementById('contentTabs').innerHTML = '';
+      renderSqlQueryInterface();
+    }
+    
+    // Render SQL query interface
+    function renderSqlQueryInterface() {
+      const container = document.getElementById('contentBody');
+      
+      container.innerHTML = `
+        <div class="raw-data-section">
+          <div class="raw-data-header">
+            <span class="raw-data-title">🔍 SQL 查询</span>
+          </div>
+          <div class="sql-input-wrapper">
+            <select class="db-select" id="dbSelect">
+              ${checkpointsDb ? '<option value="checkpoints">checkpoints.db</option>' : ''}
+              ${memoryDb ? '<option value="memory">memory.db</option>' : ''}
+            </select>
+            <input type="text" class="sql-input" id="sqlInput" placeholder="输入 SQL 查询语句，如: SELECT * FROM threads LIMIT 10" />
+            <button class="sql-run-btn" id="runSqlBtn">▶ 执行</button>
+          </div>
+          <div class="quick-queries">
+            <span style="color: var(--text-muted); font-size: 0.75rem; margin-right: 0.5rem;">快捷查询:</span>
+            <button class="quick-query-btn" data-sql="SELECT * FROM threads ORDER BY updated_at DESC LIMIT 20">所有Sessions</button>
+            <button class="quick-query-btn" data-sql="SELECT * FROM thread_state LIMIT 10">Session状态</button>
+            <button class="quick-query-btn" data-sql="SELECT * FROM memories ORDER BY updated_at DESC LIMIT 20">所有Memories</button>
+            <button class="quick-query-btn" data-sql="SELECT namespace, COUNT(*) as count FROM memories GROUP BY namespace">Memory统计</button>
+            <button class="quick-query-btn" data-sql="SELECT name FROM sqlite_master WHERE type='table'">表结构</button>
+          </div>
+        </div>
+        <div id="queryResult">
+          <div class="empty-state" style="padding: 2rem;">
+            <div class="empty-state-icon">👆</div>
+            <div>点击左侧表格或执行 SQL 查询</div>
+          </div>
+        </div>
+      `;
+      
+      // Run SQL button handler
+      document.getElementById('runSqlBtn').addEventListener('click', () => {
+        const db = document.getElementById('dbSelect').value;
+        const sql = document.getElementById('sqlInput').value.trim();
+        if (sql) {
+          executeSqlQuery(db, sql);
+        }
+      });
+      
+      // Enter key to run
+      document.getElementById('sqlInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          document.getElementById('runSqlBtn').click();
+        }
+      });
+      
+      // Quick query buttons
+      document.querySelectorAll('.quick-query-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const sql = btn.dataset.sql;
+          document.getElementById('sqlInput').value = sql;
+          
+          // Auto-select correct database
+          const dbSelect = document.getElementById('dbSelect');
+          if (sql.includes('memories') && memoryDb) {
+            dbSelect.value = 'memory';
+          } else if (checkpointsDb) {
+            dbSelect.value = 'checkpoints';
+          }
+          
+          document.getElementById('runSqlBtn').click();
+        });
+      });
+    }
+    
+    // Execute SQL query
+    function executeSqlQuery(dbName, sql) {
+      const db = dbName === 'checkpoints' ? checkpointsDb : memoryDb;
+      const resultContainer = document.getElementById('queryResult');
+      
+      // Clear previous JSON data store
+      jsonDataStore = [];
+      
+      if (!db) {
+        resultContainer.innerHTML = `
+          <div class="observation-card" style="border-left: 3px solid var(--accent-red);">
+            <div style="color: var(--accent-red);">❌ 数据库未加载: ${dbName}</div>
+          </div>
+        `;
+        return;
+      }
+      
+      try {
+        const startTime = performance.now();
+        const result = db.exec(sql);
+        const duration = (performance.now() - startTime).toFixed(2);
+        
+        if (result.length === 0) {
+          resultContainer.innerHTML = `
+            <div class="observation-card">
+              <div style="color: var(--text-muted);">查询完成，无结果返回 (${duration}ms)</div>
+            </div>
+          `;
+          return;
+        }
+        
+        const columns = result[0].columns;
+        const values = result[0].values;
+        
+        resultContainer.innerHTML = `
+          <div class="table-info">
+            <span>📊 返回 <span class="row-count">${values.length}</span> 行</span>
+            <span>⏱️ ${duration}ms</span>
+            <span>📁 ${dbName}.db</span>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}</tr>
+              </thead>
+              <tbody>
+                ${values.map(row => `
+                  <tr>
+                    ${row.map((cell, colIdx) => `<td class="expandable">${formatCellValue(cell, columns[colIdx])}</td>`).join('')}
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      } catch (error) {
+        resultContainer.innerHTML = `
+          <div class="observation-card" style="border-left: 3px solid var(--accent-red);">
+            <div style="color: var(--accent-red); font-weight: 600; margin-bottom: 0.5rem;">❌ SQL 错误</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">${escapeHtml(error.message)}</div>
+          </div>
+        `;
+      }
+    }
+    
+    // Render table data
+    function renderTableData(dbName, tableName) {
+      const sql = `SELECT * FROM "${tableName}" LIMIT 100`;
+      document.getElementById('sqlInput').value = sql;
+      document.getElementById('dbSelect').value = dbName;
+      executeSqlQuery(dbName, sql);
+    }
+    
+    // Store JSON data for modal access
+    let jsonDataStore = [];
+
+    // Format cell value for display
+    function formatCellValue(value, colName = '') {
+      if (value === null || value === undefined) {
+        return '<span class="cell-null">NULL</span>';
+      }
+      
+      if (typeof value === 'string') {
+        // Check if it looks like JSON
+        if ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))) {
+          try {
+            const parsed = JSON.parse(value);
+            const preview = getJsonPreview(parsed);
+            // Store the parsed data and get index
+            const dataIndex = jsonDataStore.length;
+            jsonDataStore.push({ title: colName, data: parsed });
+            return `
+              <button class="json-cell-btn" data-json-index="${dataIndex}">
+                🔍 查看JSON
+              </button>
+              <span class="json-tree-preview">${escapeHtml(preview)}</span>
+            `;
+          } catch (e) {
+            // Not valid JSON, show as string
+          }
+        }
+        
+        // Truncate long strings
+        if (value.length > 100) {
+          return `<span title="${escapeHtml(value)}">${escapeHtml(value.substring(0, 100))}...</span>`;
+        }
+        return escapeHtml(value);
+      }
+      
+      return escapeHtml(String(value));
+    }
+
+    // Get JSON preview string
+    function getJsonPreview(obj) {
+      if (Array.isArray(obj)) {
+        return `[${obj.length} items]`;
+      }
+      if (typeof obj === 'object' && obj !== null) {
+        const keys = Object.keys(obj).slice(0, 3);
+        return `{${keys.join(', ')}${Object.keys(obj).length > 3 ? '...' : ''}}`;
+      }
+      return String(obj).substring(0, 50);
+    }
+
+    // Current JSON data for modal
+    let currentJsonData = null;
+
+    // Open JSON modal by index
+    function openJsonModalByIndex(index) {
+      const item = jsonDataStore[index];
+      if (!item) {
+        alert('JSON 数据未找到');
+        return;
+      }
+      
+      currentJsonData = item.data;
+      document.getElementById('jsonModalTitle').textContent = item.title || 'JSON 查看器';
+      document.getElementById('jsonTreeContent').innerHTML = renderJsonTree(currentJsonData, '', true);
+      document.getElementById('jsonModal').classList.add('active');
+      
+      // Add toggle handlers
+      addJsonTreeHandlers();
+    }
+
+    // Event delegation for JSON view buttons
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.json-cell-btn');
+      if (btn && btn.dataset.jsonIndex !== undefined) {
+        openJsonModalByIndex(parseInt(btn.dataset.jsonIndex, 10));
+      }
+    });
+
+    // Close JSON modal
+    document.getElementById('jsonModalClose').addEventListener('click', () => {
+      document.getElementById('jsonModal').classList.remove('active');
+    });
+
+    // Close on overlay click
+    document.getElementById('jsonModal').addEventListener('click', (e) => {
+      if (e.target.id === 'jsonModal') {
+        document.getElementById('jsonModal').classList.remove('active');
+      }
+    });
+
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.getElementById('jsonModal').classList.remove('active');
+      }
+    });
+
+    // Expand all
+    document.getElementById('expandAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('.json-tree-toggle').forEach(toggle => {
+        toggle.classList.remove('collapsed');
+      });
+      document.querySelectorAll('.json-tree-content').forEach(content => {
+        content.classList.remove('collapsed');
+      });
+    });
+
+    // Collapse all
+    document.getElementById('collapseAllBtn').addEventListener('click', () => {
+      document.querySelectorAll('.json-tree-toggle').forEach(toggle => {
+        toggle.classList.add('collapsed');
+      });
+      document.querySelectorAll('.json-tree-content').forEach(content => {
+        content.classList.add('collapsed');
+      });
+    });
+
+    // Copy JSON
+    document.getElementById('copyJsonBtn').addEventListener('click', async () => {
+      if (currentJsonData) {
+        try {
+          await navigator.clipboard.writeText(JSON.stringify(currentJsonData, null, 2));
+          const btn = document.getElementById('copyJsonBtn');
+          const original = btn.textContent;
+          btn.textContent = '✓ 已复制';
+          setTimeout(() => { btn.textContent = original; }, 2000);
+        } catch (e) {
+          alert('复制失败');
+        }
+      }
+    });
+
+    // Search JSON
+    document.getElementById('jsonSearchInput').addEventListener('input', (e) => {
+      const query = e.target.value.toLowerCase();
+      document.querySelectorAll('.json-tree-key').forEach(key => {
+        const keyText = key.textContent.toLowerCase();
+        if (query && keyText.includes(query)) {
+          key.classList.add('json-highlight');
+          // Expand parent containers
+          let parent = key.closest('.json-tree-content');
+          while (parent) {
+            parent.classList.remove('collapsed');
+            const toggle = parent.previousElementSibling?.querySelector('.json-tree-toggle');
+            if (toggle) toggle.classList.remove('collapsed');
+            parent = parent.parentElement?.closest('.json-tree-content');
+          }
+        } else {
+          key.classList.remove('json-highlight');
+        }
+      });
+    });
+
+    // Render JSON tree
+    function renderJsonTree(obj, key = '', isRoot = false, depth = 0) {
+      const id = 'jt_' + Math.random().toString(36).substr(2, 9);
+      
+      if (obj === null) {
+        return `<div class="json-tree-item">
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-null">null</span>
+        </div>`;
+      }
+      
+      if (obj === undefined) {
+        return `<div class="json-tree-item">
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-null">undefined</span>
+        </div>`;
+      }
+      
+      const type = typeof obj;
+      
+      if (type === 'string') {
+        const display = obj.length > 200 ? obj.substring(0, 200) + '...' : obj;
+        return `<div class="json-tree-item">
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-string">"${escapeHtml(display)}"</span>
+          ${obj.length > 200 ? `<span class="json-tree-type-badge">${obj.length} chars</span>` : ''}
+        </div>`;
+      }
+      
+      if (type === 'number') {
+        return `<div class="json-tree-item">
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-number">${obj}</span>
+        </div>`;
+      }
+      
+      if (type === 'boolean') {
+        return `<div class="json-tree-item">
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-boolean">${obj}</span>
+        </div>`;
+      }
+      
+      if (Array.isArray(obj)) {
+        if (obj.length === 0) {
+          return `<div class="json-tree-item">
+            ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+            <span class="json-tree-bracket">[]</span>
+          </div>`;
+        }
+        
+        const collapsed = depth > 1 ? 'collapsed' : '';
+        const items = obj.map((item, i) => renderJsonTree(item, String(i), false, depth + 1)).join('');
+        
+        return `<div class="json-tree-item">
+          <span class="json-tree-toggle ${collapsed}" data-target="${id}">▼</span>
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-bracket">[</span>
+          <span class="json-tree-type-badge">${obj.length} items</span>
+          <div class="json-tree-content ${collapsed}" id="${id}">
+            ${items}
+          </div>
+          <span class="json-tree-bracket">]</span>
+        </div>`;
+      }
+      
+      if (type === 'object') {
+        const keys = Object.keys(obj);
+        if (keys.length === 0) {
+          return `<div class="json-tree-item">
+            ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+            <span class="json-tree-bracket">{}</span>
+          </div>`;
+        }
+        
+        const collapsed = depth > 1 ? 'collapsed' : '';
+        const entries = keys.map(k => renderJsonTree(obj[k], k, false, depth + 1)).join('');
+        
+        return `<div class="json-tree-item">
+          <span class="json-tree-toggle ${collapsed}" data-target="${id}">▼</span>
+          ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+          <span class="json-tree-bracket">{</span>
+          <span class="json-tree-type-badge">${keys.length} keys</span>
+          <div class="json-tree-content ${collapsed}" id="${id}">
+            ${entries}
+          </div>
+          <span class="json-tree-bracket">}</span>
+        </div>`;
+      }
+      
+      return `<div class="json-tree-item">
+        ${key ? `<span class="json-tree-key">${escapeHtml(key)}</span><span class="json-tree-colon">:</span>` : ''}
+        <span>${escapeHtml(String(obj))}</span>
+      </div>`;
+    }
+
+    // Add toggle handlers for JSON tree
+    function addJsonTreeHandlers() {
+      document.querySelectorAll('.json-tree-toggle').forEach(toggle => {
+        toggle.addEventListener('click', () => {
+          const targetId = toggle.dataset.target;
+          const content = document.getElementById(targetId);
+          if (content) {
+            toggle.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+          }
+        });
+      });
+    }
+  </script>
+</body>
+</html>
+

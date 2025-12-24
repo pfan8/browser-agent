@@ -81,6 +81,13 @@ interface AgentState {
   updatedAt: string;
 }
 
+// Context info for UI display
+interface ContextInfo {
+  index: number
+  pageCount: number
+  isActive: boolean
+}
+
 interface Window {
   electronAPI: {
     // Browser control
@@ -88,18 +95,12 @@ interface Window {
     disconnectBrowser: () => Promise<void>
     getBrowserStatus: () => Promise<{ connected: boolean; url?: string }>
     
-    // Browser operations
-    navigate: (url: string) => Promise<{ success: boolean; error?: string }>
-    click: (selector: string) => Promise<{ success: boolean; error?: string }>
-    type: (selector: string, text: string) => Promise<{ success: boolean; error?: string }>
-    press: (key: string) => Promise<{ success: boolean; error?: string }>
-    screenshot: (name?: string) => Promise<{ success: boolean; path?: string; error?: string }>
-    waitFor: (ms: number) => Promise<{ success: boolean }>
-    getPageInfo: () => Promise<{ url: string; title: string }>
-    evaluateSelector: (description: string) => Promise<{ selector: string; alternatives: string[] }>
-    listPages: () => Promise<{ index: number; url: string; title: string; active: boolean }[]>
-    switchToPage: (index: number) => Promise<{ success: boolean; error?: string; data?: { index: number; url?: string; title?: string } }>
-    runCode: (code: string) => Promise<{ success: boolean; error?: string }>
+    // Browser operations (all via runCode)
+    runCode: (code: string) => Promise<{ success: boolean; result?: unknown; error?: string }>
+    
+    // Context management
+    getContextsInfo: () => Promise<ContextInfo[]>
+    switchContext: (index: number) => Promise<{ success: boolean; error?: string }>
     
     // Recording
     getRecording: () => Promise<import('@dsl/types').Recording>
@@ -129,7 +130,7 @@ interface Window {
     // Agent (LangGraph-based)
     agent: {
       // Task Execution
-      executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>
+      executeTask: (task: string, options?: { threadId?: string; continueSession?: boolean }) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>
       stopTask: () => Promise<{ success: boolean; error?: string }>
       getStatus: () => Promise<{ 
         status: string
@@ -141,8 +142,8 @@ interface Window {
       
       // Sessions
       createSession: (name: string, description?: string) => Promise<{ success: boolean; session?: { id: string; name: string }; error?: string }>
-      loadSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
-      listSessions: () => Promise<Array<{ id: string; name: string; description?: string; checkpointCount: number; createdAt: string; updatedAt: string }>>
+      loadSession: (sessionId: string) => Promise<{ success: boolean; hasState?: boolean; error?: string }>
+      listSessions: () => Promise<Array<{ id: string; name: string; description?: string; messageCount?: number; createdAt: string; updatedAt: string }>>
       deleteSession: (sessionId: string) => Promise<boolean>
       getCurrentSession: () => Promise<string | null>
       
@@ -154,9 +155,13 @@ interface Window {
       deleteCheckpoint: (checkpointId: string) => Promise<boolean>
       
       // Memory & History
-      getConversation: (limit?: number) => Promise<ConversationMessage[]>
-      clearMemory: () => Promise<{ success: boolean }>
+      getConversation: (sessionIdOrLimit?: string | number, limit?: number) => Promise<ConversationMessage[]>
+      clearMemory: () => Promise<{ success: boolean; error?: string }>
       getMemorySummary: () => Promise<string>
+      getMemoryStats: () => Promise<{ totalMemories: number; byNamespace: Record<string, number> } | null>
+      getRecentTasks: (limit?: number) => Promise<Array<{ goal: string; summary: string; success: boolean }>>
+      saveFact: (fact: { content: string; category?: string }) => Promise<{ success: boolean; error?: string }>
+      getFacts: (category?: string) => Promise<Array<{ content: string; category?: string }>>
       
       // Chat & Misc
       chat: (message: string) => Promise<{ success: boolean; response?: string; error?: string }>
@@ -165,7 +170,8 @@ interface Window {
       getConfig: () => Promise<AgentConfig>
       
       // Trace
-      getTrace: () => Promise<string>
+      getTraceId: () => Promise<string | null>
+      onTraceId: (callback: (data: { traceId: string }) => void) => () => void
       
       // Execution Mode
       getExecutionMode: () => Promise<ExecutionMode>

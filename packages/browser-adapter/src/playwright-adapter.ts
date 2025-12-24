@@ -5,7 +5,7 @@
  * Only exposes runCode - all browser operations are done via code.
  */
 
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 import { EventEmitter } from 'events';
 import type { 
   IBrowserAdapter, 
@@ -26,7 +26,6 @@ function genOpId(): string {
 export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
-  private page: Page | null = null;
   private cdpUrl: string = 'http://localhost:9222';
   private connectionCheckInterval: NodeJS.Timeout | null = null;
   private lastConnectionError: string | null = null;
@@ -83,6 +82,11 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         timeout: this.config.defaultTimeout
       });
 
+      // Listen for browser disconnect event
+      this.browser.on('disconnected', () => {
+        this.handleDisconnection('Browser disconnected');
+      });
+
       // Get existing contexts or create new one
       const contexts = this.browser.contexts();
       if (contexts.length > 0) {
@@ -91,18 +95,8 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         this.context = await this.browser.newContext();
       }
 
-      // Get existing page, preferring non-internal pages
-      const pages = this.context.pages();
-      if (pages.length > 0) {
-        // Find first non-internal page
-        const userPage = pages.find(p => !this.isInternalPage(p.url()));
-        this.page = userPage || pages[0];
-      } else {
-        this.page = await this.context.newPage();
-      }
-
-      // Setup event listeners
-      this.setupPageListeners();
+      // Setup context-level event listeners
+      this.setupContextListeners();
       
       // Setup connection health check
       this.startConnectionHealthCheck();
@@ -110,11 +104,13 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
       // Clear any previous connection errors
       this.lastConnectionError = null;
 
+      // Get first non-internal page URL for logging
+      const pages = this.context.pages().filter(p => !this.isInternalPage(p.url()));
+      const url = pages[0]?.url() || 'about:blank';
+
       const duration = timer.end();
-      log.infoWithDuration('Connected to browser successfully', duration, { 
-        url: this.page.url() 
-      });
-      this.emit('connected', { url: this.page.url() });
+      log.infoWithDuration('Connected to browser successfully', duration, { url });
+      this.emit('connected', { url });
 
       return { success: true };
     } catch (error) {
@@ -129,68 +125,42 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
   /**
    * Start connection health check interval
    */
-  private healthCheckFailCount = 0;
-  private static readonly MAX_HEALTH_CHECK_FAILURES = 5;
   private isHealthCheckDisconnecting = false;
 
   private startConnectionHealthCheck(): void {
     this.stopConnectionHealthCheck();
-    this.healthCheckFailCount = 0;
     this.isHealthCheckDisconnecting = false;
     
-    this.connectionCheckInterval = setInterval(async () => {
-      // Skip if already disconnecting or not connected
-      if (this.isHealthCheckDisconnecting || !this.browser || !this.page) return;
-      
-      try {
-        await this.page.evaluate(() => document.readyState);
-        // Reset failure count on success
-        this.healthCheckFailCount = 0;
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Connection lost';
-        
-        // Check if it's a navigation-related transient error
-        const isTransientError = errorMessage.includes('Execution context was destroyed') ||
-                                 errorMessage.includes('navigation') ||
-                                 errorMessage.includes('Target closed');
-        
-        if (isTransientError) {
-          this.healthCheckFailCount++;
-          log.warn('Connection health check failed', { 
-            attempt: this.healthCheckFailCount, 
-            maxAttempts: PlaywrightAdapter.MAX_HEALTH_CHECK_FAILURES,
-            error: errorMessage,
-          });
-          
-          // Only disconnect after multiple consecutive failures
-          if (this.healthCheckFailCount < PlaywrightAdapter.MAX_HEALTH_CHECK_FAILURES) {
-            return;
-          }
-        }
-        
-        // Prevent multiple disconnection attempts
-        if (this.isHealthCheckDisconnecting) return;
-        this.isHealthCheckDisconnecting = true;
-        
-        log.error('Connection health check failed permanently', { error: errorMessage });
-        
-        this.lastConnectionError = errorMessage;
-        
-        this.stopConnectionHealthCheck();
-        
-        this.emit('connectionLost', { 
-          error: errorMessage,
-          canReconnect: true,
-          cdpUrl: this.cdpUrl
-        });
-        
-        this.browser = null;
-        this.context = null;
-        this.page = null;
-        
-        this.emit('disconnected', { reason: 'connection_lost', error: errorMessage });
+    this.connectionCheckInterval = setInterval(() => {
+      // Use browser.isConnected() instead of page.evaluate()
+      if (!this.browser || !this.browser.isConnected()) {
+        this.handleDisconnection('Connection lost');
       }
     }, this.config.healthCheckInterval);
+  }
+
+  /**
+   * Handle disconnection from browser
+   */
+  private handleDisconnection(reason: string): void {
+    if (this.isHealthCheckDisconnecting) return;
+    this.isHealthCheckDisconnecting = true;
+    
+    log.error('Browser disconnected', { reason });
+    
+    this.stopConnectionHealthCheck();
+    this.lastConnectionError = reason;
+    
+    this.emit('connectionLost', { 
+      error: reason,
+      canReconnect: true,
+      cdpUrl: this.cdpUrl
+    });
+    
+    this.browser = null;
+    this.context = null;
+    
+    this.emit('disconnected', { reason: 'connection_lost', error: reason });
   }
   
   /**
@@ -212,7 +182,6 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
     if (this.browser) {
       this.browser = null;
       this.context = null;
-      this.page = null;
       this.emit('disconnected', { reason: 'user_disconnect' });
       log.info('Disconnected from browser');
     }
@@ -228,7 +197,6 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
     this.stopConnectionHealthCheck();
     this.browser = null;
     this.context = null;
-    this.page = null;
     
     return this.connect(this.cdpUrl);
   }
@@ -244,109 +212,82 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
    * Get current browser status
    */
   async getStatus(): Promise<BrowserStatus> {
-    if (!this.page) {
-      return { connected: false };
-    }
-
-    try {
-      return {
-        connected: true,
-        url: this.page.url(),
-        title: await this.page.title()
-      };
-    } catch {
-      return { connected: false };
-    }
+    return { connected: this.isConnected() };
   }
 
   /**
    * Check if connected
    */
   isConnected(): boolean {
-    return this.browser !== null && this.page !== null;
+    return this.browser !== null && this.browser.isConnected();
   }
 
   /**
    * Execute arbitrary Playwright code
    * 
-   * The code can access: page, context, browser
-   * Returns the result of the code execution
+   * The code can access: context, browser
+   * Code should manage pages via context.pages() or context.newPage()
    * 
    * Code can be:
-   * 1. A simple expression: await page.goto('...')
-   * 2. A function body with return: await page.goto('...'); return { url: page.url() }
-   * 3. An async function definition: async function execute(page) { ... }
+   * 1. A simple expression: await context.pages()[0].goto('...')
+   * 2. A function body with return: const page = context.pages()[0]; return { url: page.url() }
+   * 3. An async function definition: async function execute(context, browser) { ... }
    */
   async runCode(code: string): Promise<CodeExecutionResult> {
-    if (!this.page) {
+    if (!this.context) {
       return { success: false, error: 'Browser not connected' };
     }
 
     const logs: string[] = [];
     
-    // Capture page state before execution for debugging
-    const pageUrl = this.page.url();
-    let pageTitle = '';
-    try { pageTitle = await this.page.title(); } catch { /* ignore */ }
-    
     try {
       log.info('Executing code', { codeLength: code.length });
       log.debug('Code content', { code });
       
-      // Capture console logs during execution
-      const consoleHandler = (msg: { type: () => string; text: () => string }) => {
-        logs.push(`[${msg.type()}] ${msg.text()}`);
-      };
-      this.page.on('console', consoleHandler);
+      // Check if code is a function definition
+      const isFunctionDef = /^\s*(async\s+)?function\s+\w+\s*\(/.test(code);
       
-      try {
-        // Check if code is a function definition
-        const isFunctionDef = /^\s*(async\s+)?function\s+\w+\s*\(/.test(code);
+      let result: unknown;
+      
+      if (isFunctionDef) {
+        // Code is a function definition - execute it and call the function
+        const asyncFunction = new Function('context', 'browser', `
+          return (async () => {
+            ${code}
+            // Call the defined function
+            const funcName = ${JSON.stringify(code)}.match(/function\\s+(\\w+)/)[1];
+            return await eval(funcName)(context, browser);
+          })();
+        `);
+        result = await asyncFunction(this.context, this.browser);
+      } else {
+        // Check if code contains explicit return statement
+        const hasReturn = /\breturn\s/.test(code);
+        // Check if code is a single expression
+        const isSingleExpression = !hasReturn && !/;\s*\S/.test(code.trim());
         
-        let result: unknown;
-        
-        if (isFunctionDef) {
-          // Code is a function definition - execute it and call the function
-          const asyncFunction = new Function('page', 'context', 'browser', `
-            return (async () => {
-              ${code}
-              // Call the defined function
-              const funcName = ${JSON.stringify(code)}.match(/function\\s+(\\w+)/)[1];
-              return await eval(funcName)(page, context, browser);
-            })();
-          `);
-          result = await asyncFunction(this.page, this.context, this.browser);
-        } else {
-          // Check if code contains explicit return statement
-          const hasReturn = /\breturn\s/.test(code);
-          // Check if code is a single expression
-          const isSingleExpression = !hasReturn && !/;\s*\S/.test(code.trim());
-          
-          let wrappedCode = code;
-          if (isSingleExpression) {
-            // Single expression - return its value
-            wrappedCode = `return ${code.trim().replace(/;$/, '')}`;
-          }
-          
-          const asyncFunction = new Function('page', 'context', 'browser', `
-            return (async () => {
-              ${wrappedCode}
-            })();
-          `);
-          result = await asyncFunction(this.page, this.context, this.browser);
+        let wrappedCode = code;
+        if (isSingleExpression) {
+          // Single expression - return its value
+          wrappedCode = `return ${code.trim().replace(/;$/, '')}`;
         }
-
-        this.emit('operation', {
-          id: genOpId(),
-          type: 'code',
-          codeLength: code.length,
-          timestamp: new Date().toISOString()
-        });
-
-        return { success: true, result, logs, pageUrl, pageTitle };
-      } finally {
-        this.page.off('console', consoleHandler);
+        
+        const asyncFunction = new Function('context', 'browser', `
+          return (async () => {
+            ${wrappedCode}
+          })();
+        `);
+        result = await asyncFunction(this.context, this.browser);
       }
+
+      this.emit('operation', {
+        id: genOpId(),
+        type: 'code',
+        codeLength: code.length,
+        timestamp: new Date().toISOString()
+      });
+
+      return { success: true, result, logs };
     } catch (error) {
       // Extract detailed error info for self-repair
       const errorInfo = this.extractErrorInfo(error, code);
@@ -363,8 +304,6 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         stackTrace: errorInfo.stackTrace,
         errorType: errorInfo.type,
         errorLine: errorInfo.line,
-        pageUrl,
-        pageTitle,
       };
     }
   }
@@ -408,32 +347,79 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
   }
 
   /**
-   * Setup page event listeners
+   * Setup context-level event listeners
    */
-  private setupPageListeners(): void {
-    if (!this.page) return;
+  private setupContextListeners(): void {
+    if (!this.context) return;
 
-    this.page.on('load', () => {
-      this.emit('pageLoad', { url: this.page?.url() });
-    });
-
-    this.page.on('dialog', async (dialog) => {
-      this.emit('dialog', { type: dialog.type(), message: dialog.message() });
-      await dialog.accept();
-    });
-
-    this.context?.on('page', (newPage) => {
+    // Listen for new pages being created
+    this.context.on('page', (newPage) => {
       this.emit('newPage', { url: newPage.url() });
-      this.page = newPage;
-      this.setupPageListeners();
+      
+      // Setup page-level events for each new page
+      newPage.on('load', () => {
+        this.emit('pageLoad', { url: newPage.url() });
+      });
+      
+      newPage.on('dialog', async (dialog) => {
+        this.emit('dialog', { type: dialog.type(), message: dialog.message() });
+        await dialog.accept();
+      });
     });
+
+    // Setup events for existing pages
+    for (const page of this.context.pages()) {
+      page.on('load', () => {
+        this.emit('pageLoad', { url: page.url() });
+      });
+      
+      page.on('dialog', async (dialog) => {
+        this.emit('dialog', { type: dialog.type(), message: dialog.message() });
+        await dialog.accept();
+      });
+    }
   }
 
   /**
-   * Get the current page instance (for advanced operations)
+   * Get all browser contexts
    */
-  getPage(): Page | null {
-    return this.page;
+  getContexts(): BrowserContext[] {
+    return this.browser?.contexts() ?? [];
+  }
+
+  /**
+   * Get the current context index
+   */
+  getCurrentContextIndex(): number {
+    if (!this.context) return -1;
+    const contexts = this.getContexts();
+    return contexts.indexOf(this.context);
+  }
+
+  /**
+   * Switch to a specific context by index
+   */
+  async switchContext(index: number): Promise<CodeExecutionResult> {
+    const contexts = this.getContexts();
+    if (index < 0 || index >= contexts.length) {
+      return { success: false, error: 'Invalid context index' };
+    }
+    this.context = contexts[index];
+    this.setupContextListeners();
+    log.info('Switched to context', { index });
+    return { success: true };
+  }
+
+  /**
+   * Get information about all contexts
+   */
+  async getContextsInfo(): Promise<Array<{ index: number; pageCount: number; isActive: boolean }>> {
+    const contexts = this.getContexts();
+    return contexts.map((ctx, index) => ({
+      index,
+      pageCount: ctx.pages().filter(p => !this.isInternalPage(p.url())).length,
+      isActive: ctx === this.context,
+    }));
   }
 
   /**

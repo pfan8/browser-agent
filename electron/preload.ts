@@ -66,11 +66,25 @@ interface ConversationMessage {
 
 interface CheckpointInfo {
   id: string;
-  name: string;
-  description?: string;
-  stepIndex: number;
+  threadId: string;
   createdAt: string;
-  isAutoSave: boolean;
+  step: number;
+  messagePreview?: string;
+  isUserMessage: boolean;
+  parentCheckpointId?: string;
+  // Legacy fields for backward compatibility
+  name?: string;
+  description?: string;
+  stepIndex?: number;
+  isAutoSave?: boolean;
+}
+
+interface CheckpointState {
+  messages: ConversationMessage[];
+  goal?: string;
+  status?: string;
+  isComplete?: boolean;
+  actionHistory?: unknown[];
 }
 
 type ExecutionMode = 'iterative' | 'script';
@@ -95,24 +109,25 @@ interface AgentEvent {
 // Electron API Interface
 // ============================================
 
+// Context info for UI display
+interface ContextInfo {
+  index: number;
+  pageCount: number;
+  isActive: boolean;
+}
+
 interface ElectronAPI {
   // Browser control
   connectBrowser: (cdpUrl: string) => Promise<{ success: boolean; error?: string }>;
   disconnectBrowser: () => Promise<void>;
   getBrowserStatus: () => Promise<{ connected: boolean; url?: string }>;
   
-  // Browser operations
-  navigate: (url: string) => Promise<{ success: boolean; error?: string }>;
-  click: (selector: string) => Promise<{ success: boolean; error?: string }>;
-  type: (selector: string, text: string) => Promise<{ success: boolean; error?: string }>;
-  press: (key: string) => Promise<{ success: boolean; error?: string }>;
-  screenshot: (name?: string) => Promise<{ success: boolean; path?: string; error?: string }>;
-  waitFor: (ms: number) => Promise<{ success: boolean }>;
-  getPageInfo: () => Promise<{ url: string; title: string }>;
-  evaluateSelector: (description: string) => Promise<{ selector: string; alternatives: string[] }>;
-  listPages: () => Promise<{ index: number; url: string; title: string; active: boolean }[]>;
-  switchToPage: (index: number) => Promise<{ success: boolean; error?: string; data?: { index: number; url?: string; title?: string } }>;
-  runCode: (code: string) => Promise<{ success: boolean; error?: string }>;
+  // Browser operations (all via runCode)
+  runCode: (code: string) => Promise<{ success: boolean; result?: unknown; error?: string }>;
+  
+  // Context management
+  getContextsInfo: () => Promise<ContextInfo[]>;
+  switchContext: (index: number) => Promise<{ success: boolean; error?: string }>;
   
   // Recording
   getRecording: () => Promise<Recording>;
@@ -141,7 +156,7 @@ interface ElectronAPI {
   // Agent (LangGraph-based)
   agent: {
     // Task Execution
-    executeTask: (task: string) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>;
+    executeTask: (task: string, options?: { threadId?: string; continueSession?: boolean }) => Promise<{ success: boolean; plan?: TaskPlan; result?: string; error?: string }>;
     stopTask: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ status: AgentStatus; isRunning: boolean; currentPlan: TaskPlan | null; progress: { total: number; completed: number; failed: number; pending: number; percentage: number } | null }>;
     getState: () => Promise<AgentState>;
@@ -149,21 +164,27 @@ interface ElectronAPI {
     // Sessions
     createSession: (name: string, description?: string) => Promise<{ success: boolean; session?: { id: string; name: string }; error?: string }>;
     loadSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
-    listSessions: () => Promise<Array<{ id: string; name: string; description?: string; checkpointCount: number; createdAt: string; updatedAt: string }>>;
+    listSessions: () => Promise<Array<{ id: string; name: string; description?: string; messageCount?: number; createdAt: string; updatedAt: string }>>;
     deleteSession: (sessionId: string) => Promise<boolean>;
     getCurrentSession: () => Promise<string | null>;
     
-    // Checkpoints
+    // Checkpoints (LangGraph Native)
     createCheckpoint: (name: string, description?: string) => Promise<{ success: boolean; checkpointId?: string; error?: string }>;
-    listCheckpoints: () => Promise<CheckpointInfo[]>;
-    restoreCheckpoint: (checkpointId: string) => Promise<{ success: boolean; error?: string }>;
-    restoreLatest: () => Promise<{ success: boolean; error?: string }>;
+    listCheckpoints: (threadId?: string) => Promise<CheckpointInfo[]>;
+    getCheckpointHistory: (threadId: string) => Promise<CheckpointInfo[]>;
+    restoreCheckpoint: (threadId: string, checkpointId: string) => Promise<{ success: boolean; state?: CheckpointState; error?: string }>;
+    getStateAtCheckpoint: (threadId: string, checkpointId: string) => Promise<CheckpointState | null>;
+    restoreLatest: (threadId?: string) => Promise<{ success: boolean; state?: CheckpointState | null; error?: string }>;
     deleteCheckpoint: (checkpointId: string) => Promise<boolean>;
     
     // Memory & History
-    getConversation: (limit?: number) => Promise<ConversationMessage[]>;
-    clearMemory: () => Promise<{ success: boolean }>;
+    getConversation: (sessionIdOrLimit?: string | number, limit?: number) => Promise<ConversationMessage[]>;
+    clearMemory: () => Promise<{ success: boolean; error?: string }>;
     getMemorySummary: () => Promise<string>;
+    getMemoryStats: () => Promise<{ totalMemories: number; byNamespace: Record<string, number> } | null>;
+    getRecentTasks: (limit?: number) => Promise<Array<{ goal: string; summary: string; success: boolean }>>;
+    saveFact: (fact: { content: string; category?: string }) => Promise<{ success: boolean; error?: string }>;
+    getFacts: (category?: string) => Promise<Array<{ content: string; category?: string }>>;
     
     // Chat & Misc
     chat: (message: string) => Promise<{ success: boolean; response?: string; error?: string }>;
@@ -172,7 +193,8 @@ interface ElectronAPI {
     getConfig: () => Promise<AgentConfig>;
     
     // Trace
-    getTrace: () => Promise<string>;
+    getTraceId: () => Promise<string | null>;
+    onTraceId: (callback: (data: { traceId: string }) => void) => () => void;
     
     // Execution Mode
     getExecutionMode: () => Promise<ExecutionMode>;
@@ -205,18 +227,12 @@ const electronAPI: ElectronAPI = {
   disconnectBrowser: () => ipcRenderer.invoke('disconnect-browser'),
   getBrowserStatus: () => ipcRenderer.invoke('get-browser-status'),
   
-  // Browser operations
-  navigate: (url: string) => ipcRenderer.invoke('navigate', url),
-  click: (selector: string) => ipcRenderer.invoke('click', selector),
-  type: (selector: string, text: string) => ipcRenderer.invoke('type', selector, text),
-  press: (key: string) => ipcRenderer.invoke('press', key),
-  screenshot: (name?: string) => ipcRenderer.invoke('screenshot', name),
-  waitFor: (ms: number) => ipcRenderer.invoke('wait-for', ms),
-  getPageInfo: () => ipcRenderer.invoke('get-page-info'),
-  evaluateSelector: (description: string) => ipcRenderer.invoke('evaluate-selector', description),
-  listPages: () => ipcRenderer.invoke('list-pages'),
-  switchToPage: (index: number) => ipcRenderer.invoke('switch-to-page', index),
+  // Browser operations (all via runCode)
   runCode: (code: string) => ipcRenderer.invoke('run-code', code),
+  
+  // Context management
+  getContextsInfo: () => ipcRenderer.invoke('get-contexts-info'),
+  switchContext: (index: number) => ipcRenderer.invoke('switch-context', index),
   
   // Recording
   getRecording: () => ipcRenderer.invoke('get-recording'),
@@ -257,7 +273,8 @@ const electronAPI: ElectronAPI = {
   // Agent (LangGraph-based)
   agent: {
     // Task Execution
-    executeTask: (task: string) => ipcRenderer.invoke('agent-execute-task', task),
+    executeTask: (task: string, options?: { threadId?: string; continueSession?: boolean }) => 
+      ipcRenderer.invoke('agent-execute-task', task, options),
     stopTask: () => ipcRenderer.invoke('agent-stop-task'),
     getStatus: () => ipcRenderer.invoke('agent-get-status'),
     getState: () => ipcRenderer.invoke('agent-get-state'),
@@ -270,20 +287,31 @@ const electronAPI: ElectronAPI = {
     deleteSession: (sessionId: string) => ipcRenderer.invoke('agent-delete-session', sessionId),
     getCurrentSession: () => ipcRenderer.invoke('agent-get-current-session'),
     
-    // Checkpoints
+    // Checkpoints (LangGraph Native)
     createCheckpoint: (name: string, description?: string) => 
       ipcRenderer.invoke('agent-create-checkpoint', name, description),
-    listCheckpoints: () => ipcRenderer.invoke('agent-list-checkpoints'),
-    restoreCheckpoint: (checkpointId: string) => 
-      ipcRenderer.invoke('agent-restore-checkpoint', checkpointId),
-    restoreLatest: () => ipcRenderer.invoke('agent-restore-latest'),
+    listCheckpoints: (threadId?: string) => 
+      ipcRenderer.invoke('agent-list-checkpoints', threadId),
+    getCheckpointHistory: (threadId: string) => 
+      ipcRenderer.invoke('agent-get-checkpoint-history', threadId),
+    restoreCheckpoint: (threadId: string, checkpointId: string) => 
+      ipcRenderer.invoke('agent-restore-checkpoint', threadId, checkpointId),
+    getStateAtCheckpoint: (threadId: string, checkpointId: string) => 
+      ipcRenderer.invoke('agent-get-state-at-checkpoint', threadId, checkpointId),
+    restoreLatest: (threadId?: string) => 
+      ipcRenderer.invoke('agent-restore-latest', threadId),
     deleteCheckpoint: (checkpointId: string) => 
       ipcRenderer.invoke('agent-delete-checkpoint', checkpointId),
     
     // Memory & History
-    getConversation: (limit?: number) => ipcRenderer.invoke('agent-get-conversation', limit),
+    getConversation: (sessionIdOrLimit?: string | number, limit?: number) => 
+      ipcRenderer.invoke('agent-get-conversation', sessionIdOrLimit, limit),
     clearMemory: () => ipcRenderer.invoke('agent-clear-memory'),
     getMemorySummary: () => ipcRenderer.invoke('agent-get-memory-summary'),
+    getMemoryStats: () => ipcRenderer.invoke('agent-get-memory-stats'),
+    getRecentTasks: (limit?: number) => ipcRenderer.invoke('agent-get-recent-tasks', limit),
+    saveFact: (fact: { content: string; category?: string }) => ipcRenderer.invoke('agent-save-fact', fact),
+    getFacts: (category?: string) => ipcRenderer.invoke('agent-get-facts', category),
     
     // Chat & Misc
     chat: (message: string) => ipcRenderer.invoke('agent-chat', message),
@@ -292,7 +320,12 @@ const electronAPI: ElectronAPI = {
     getConfig: () => ipcRenderer.invoke('agent-get-config'),
     
     // Trace
-    getTrace: () => ipcRenderer.invoke('agent-get-trace'),
+    getTraceId: () => ipcRenderer.invoke('agent-get-trace-id'),
+    onTraceId: (callback: (data: { traceId: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { traceId: string }) => callback(data);
+      ipcRenderer.on('agent-trace-id', handler);
+      return () => ipcRenderer.removeListener('agent-trace-id', handler);
+    },
     
     // Execution Mode
     getExecutionMode: () => ipcRenderer.invoke('agent-get-execution-mode'),

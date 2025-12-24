@@ -1,23 +1,107 @@
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage, ExecutionStep } from '@dsl/types';
 
 interface CheckpointInfo {
   id: string;
-  name: string;
-  description?: string;
-  stepIndex: number;
+  threadId: string;
   createdAt: string;
-  isAutoSave: boolean;
+  step: number;
+  messagePreview?: string;
+  isUserMessage: boolean;
+  parentCheckpointId?: string;
+  // Legacy fields for backward compatibility
+  name?: string;
+  description?: string;
+  stepIndex?: number;
+  isAutoSave?: boolean;
 }
 
 interface MessageListProps {
   messages: ChatMessage[];
   isProcessing: boolean;
   checkpoints?: CheckpointInfo[];
-  onRestoreCheckpoint?: (checkpointId: string) => void;
+  onEditAndResend?: (checkpointId: string, newContent: string) => void;
   onExampleClick?: (text: string) => void;
+}
+
+// Inline editable message component
+function EditableMessage({ 
+  content, 
+  checkpointId,
+  onSave, 
+  onCancel 
+}: { 
+  content: string; 
+  checkpointId: string;
+  onSave: (checkpointId: string, newContent: string) => void; 
+  onCancel: () => void;
+}) {
+  const [editedContent, setEditedContent] = useState(content);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // Auto-focus and auto-resize on mount
+  React.useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+    }
+  }, []);
+
+  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setEditedContent(e.target.value);
+    // Auto-resize
+    e.target.style.height = 'auto';
+    e.target.style.height = e.target.scrollHeight + 'px';
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Submit on Ctrl/Cmd + Enter
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (editedContent.trim()) {
+        onSave(checkpointId, editedContent.trim());
+      }
+    }
+    // Cancel on Escape
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+
+  return (
+    <div className="editable-message">
+      <textarea
+        ref={textareaRef}
+        className="edit-textarea"
+        value={editedContent}
+        onChange={handleInput}
+        onKeyDown={handleKeyDown}
+        placeholder="输入消息..."
+      />
+      <div className="edit-actions">
+        <button 
+          className="edit-cancel-btn" 
+          onClick={onCancel}
+        >
+          取消
+        </button>
+        <button 
+          className="edit-save-btn" 
+          onClick={() => editedContent.trim() && onSave(checkpointId, editedContent.trim())}
+          disabled={!editedContent.trim()}
+        >
+          发送
+        </button>
+      </div>
+      <div className="edit-hint">
+        按 Ctrl+Enter 发送 · Esc 取消
+      </div>
+    </div>
+  );
 }
 
 // Collapsible thinking component
@@ -260,32 +344,64 @@ function extractMessage(content: string): string {
   return content;
 }
 
-export default function MessageList({ messages, isProcessing, checkpoints = [], onRestoreCheckpoint, onExampleClick }: MessageListProps) {
+export default function MessageList({ messages, isProcessing, checkpoints = [], onEditAndResend, onExampleClick }: MessageListProps) {
+  // Track which message is being edited (by message id)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   // Build a map of message index -> associated checkpoint
-  // For each user message, find the first checkpoint created after it
+  // For each user message, find the corresponding checkpoint (by step or index)
   const messageCheckpointMap = useMemo(() => {
     const map = new Map<number, CheckpointInfo>();
     
     if (!checkpoints || checkpoints.length === 0) return map;
     
-    // Sort checkpoints by creation time
+    // Sort checkpoints by step number (most recent first for easy lookup)
     const sortedCheckpoints = [...checkpoints].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      (a, b) => b.step - a.step
     );
     
-    // For each user message, find the next checkpoint after it
+    // Count user messages to map them to checkpoint steps
+    let userMessageIndex = 0;
+    
     messages.forEach((message, index) => {
       if (message.role !== 'user') return;
       
-      const messageTime = new Date(message.timestamp).getTime();
+      userMessageIndex++;
       
-      // Find the first checkpoint created after this message
-      const checkpoint = sortedCheckpoints.find(cp => 
-        new Date(cp.createdAt).getTime() > messageTime
-      );
+      // Try to find a checkpoint that corresponds to this user message
+      // First try: match by isUserMessage flag and approximate step
+      const matchingCheckpoint = sortedCheckpoints.find(cp => {
+        // If the checkpoint has a user message marker and matches roughly
+        if (cp.isUserMessage) {
+          // Check if message preview matches (partial match)
+          if (cp.messagePreview && message.content.includes(cp.messagePreview.substring(0, 20))) {
+            return true;
+          }
+        }
+        return false;
+      });
       
-      if (checkpoint) {
-        map.set(index, checkpoint);
+      if (matchingCheckpoint) {
+        map.set(index, matchingCheckpoint);
+      } else {
+        // Fallback: try to match by time
+        const messageTime = new Date(message.timestamp).getTime();
+        const timeMatchedCheckpoint = sortedCheckpoints.find(cp => {
+          const cpTime = new Date(cp.createdAt).getTime();
+          // Allow 30 seconds tolerance
+          return Math.abs(cpTime - messageTime) < 30000;
+        });
+        
+        if (timeMatchedCheckpoint) {
+          map.set(index, timeMatchedCheckpoint);
+        } else if (sortedCheckpoints.length > 0) {
+          // Last resort: assign checkpoints sequentially to user messages
+          // Find a checkpoint near this position
+          const targetStep = userMessageIndex * 2; // Rough estimate: each user message creates ~2 steps
+          const nearestCheckpoint = sortedCheckpoints.reduce((prev, curr) =>
+            Math.abs(curr.step - targetStep) < Math.abs(prev.step - targetStep) ? curr : prev
+          );
+          map.set(index, nearestCheckpoint);
+        }
       }
     });
     
@@ -347,20 +463,32 @@ export default function MessageList({ messages, isProcessing, checkpoints = [], 
               {message.thinking && (
                 <ThinkingSection thinking={message.thinking} />
               )}
-              <div className="message-text">
-                <Markdown remarkPlugins={[remarkGfm]}>{extractMessage(message.content)}</Markdown>
-              </div>
+              {editingMessageId === message.id && checkpoint ? (
+                <EditableMessage
+                  content={message.content}
+                  checkpointId={checkpoint.id}
+                  onSave={(cpId, newContent) => {
+                    onEditAndResend?.(cpId, newContent);
+                    setEditingMessageId(null);
+                  }}
+                  onCancel={() => setEditingMessageId(null)}
+                />
+              ) : (
+                <div className="message-text">
+                  <Markdown remarkPlugins={[remarkGfm]}>{extractMessage(message.content)}</Markdown>
+                </div>
+              )}
               <div className="message-footer">
                 <span className="message-time">
                   {formatTime(message.timestamp)}
                 </span>
-                {message.role === 'user' && checkpoint && onRestoreCheckpoint && (
+                {message.role === 'user' && checkpoint && onEditAndResend && editingMessageId !== message.id && (
                   <button 
-                    className="restore-checkpoint-btn"
-                    onClick={() => onRestoreCheckpoint(checkpoint.id)}
-                    title={`恢复到此检查点: ${checkpoint.name}`}
+                    className="edit-message-btn"
+                    onClick={() => setEditingMessageId(message.id)}
+                    title={`编辑此消息并重新发送`}
                   >
-                    ⏪ 恢复
+                    ✏️ 编辑
                   </button>
                 )}
               </div>

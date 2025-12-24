@@ -16,11 +16,6 @@ import type { Operation, ChatMessage, ExecutionStep } from '@dsl/types';
 // Types
 // ============================================
 
-interface PageInfo {
-  url: string;
-  title: string;
-}
-
 interface TaskStep {
   id: string;
   description: string;
@@ -48,23 +43,42 @@ interface SessionInfo {
   id: string;
   name: string;
   description?: string;
-  checkpointCount: number;
+  checkpointCount?: number;
+  messageCount?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 interface CheckpointInfo {
   id: string;
-  name: string;
-  description?: string;
-  stepIndex: number;
+  threadId: string;
   createdAt: string;
-  isAutoSave: boolean;
+  step: number;
+  messagePreview?: string;
+  isUserMessage: boolean;
+  parentCheckpointId?: string;
+  // Legacy fields for backward compatibility
+  name?: string;
+  description?: string;
+  stepIndex?: number;
+  isAutoSave?: boolean;
 }
 
 // Extended ChatMessage with plan support
 interface AgentChatMessage extends ChatMessage {
   plan?: TaskPlan;
+}
+
+// Toast callback interface for lightweight notifications
+interface ToastCallbacks {
+  success: (message: string) => void;
+  error: (message: string) => void;
+  info: (message: string) => void;
+}
+
+// Hook options
+interface UseReActAgentOptions {
+  toast?: ToastCallbacks;
 }
 
 interface ReActAgentHookReturn {
@@ -75,14 +89,13 @@ interface ReActAgentHookReturn {
   // Connection State
   isConnected: boolean;
   isProcessing: boolean;
-  currentPageInfo: PageInfo | null;
-  isLoadingPageInfo: boolean;
   
   // Agent State
   currentPlan: TaskPlan | null;
   progress: AgentProgress | null;
   status: string;
   isRunning: boolean;
+  traceId: string | null;
   
   // Sessions & Checkpoints
   sessions: SessionInfo[];
@@ -90,7 +103,7 @@ interface ReActAgentHookReturn {
   checkpoints: CheckpointInfo[];
   
   // Main Actions
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, editCheckpointId?: string) => Promise<void>;
   connectBrowser: (url?: string) => Promise<void>;
   disconnectBrowser: () => Promise<void>;
   
@@ -109,13 +122,12 @@ interface ReActAgentHookReturn {
   
   // Checkpoint Management
   createCheckpoint: (name: string, description?: string) => Promise<void>;
-  restoreCheckpoint: (checkpointId: string) => Promise<void>;
-  restoreLatest: () => Promise<void>;
+  restoreCheckpoint: (checkpointId: string, threadId?: string) => Promise<void>;
+  restoreLatest: (threadId?: string) => Promise<void>;
   deleteCheckpoint: (checkpointId: string) => Promise<void>;
-  refreshCheckpoints: () => Promise<void>;
+  refreshCheckpoints: (threadId?: string) => Promise<void>;
   
   // Utility
-  refreshPageInfo: (showLoading?: boolean) => Promise<void>;
   refreshStatus: () => Promise<void>;
   clearMessages: () => void;
 }
@@ -141,7 +153,8 @@ function sanitizeInput(input: string): string {
 // Hook Implementation
 // ============================================
 
-export function useReActAgent(): ReActAgentHookReturn {
+export function useReActAgent(options: UseReActAgentOptions = {}): ReActAgentHookReturn {
+  const { toast } = options;
   // ============================================
   // State
   // ============================================
@@ -153,14 +166,13 @@ export function useReActAgent(): ReActAgentHookReturn {
   // Connection State
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [currentPageInfo, setCurrentPageInfo] = useState<PageInfo | null>(null);
-  const [isLoadingPageInfo, setIsLoadingPageInfo] = useState(false);
   
   // Agent State
   const [currentPlan, setCurrentPlan] = useState<TaskPlan | null>(null);
   const [progress, setProgress] = useState<AgentProgress | null>(null);
   const [status, setStatus] = useState<string>('idle');
   const [isRunning, setIsRunning] = useState(false);
+  const [traceId, setTraceId] = useState<string | null>(null);
   
   // Sessions & Checkpoints
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -244,31 +256,6 @@ export function useReActAgent(): ReActAgentHookReturn {
   }, []);
 
   // ============================================
-  // Page Info Management
-  // ============================================
-
-  const refreshPageInfo = useCallback(async (showLoading = true) => {
-    if (!hasElectronAPI || !isConnected) {
-      setCurrentPageInfo(null);
-      setIsLoadingPageInfo(false);
-      return;
-    }
-    if (showLoading) {
-      setIsLoadingPageInfo(true);
-    }
-    try {
-      const info = await window.electronAPI.getPageInfo();
-      setCurrentPageInfo(info);
-    } catch {
-      setCurrentPageInfo(null);
-    } finally {
-      if (showLoading) {
-        setIsLoadingPageInfo(false);
-      }
-    }
-  }, [hasElectronAPI, isConnected]);
-
-  // ============================================
   // Status & Session Refresh
   // ============================================
 
@@ -300,16 +287,22 @@ export function useReActAgent(): ReActAgentHookReturn {
     }
   }, [hasAgentAPI]);
 
-  const refreshCheckpoints = useCallback(async () => {
+  const refreshCheckpoints = useCallback(async (threadId?: string) => {
     if (!hasAgentAPI) return;
     
     try {
-      const checkpointList = await window.electronAPI.agent.listCheckpoints();
-      setCheckpoints(checkpointList);
+      const targetThreadId = threadId || currentSessionId;
+      if (targetThreadId) {
+        const checkpointList = await window.electronAPI.agent.getCheckpointHistory(targetThreadId);
+        setCheckpoints(checkpointList);
+      } else {
+        const checkpointList = await window.electronAPI.agent.listCheckpoints();
+        setCheckpoints(checkpointList);
+      }
     } catch (e) {
       console.error('Failed to refresh checkpoints:', e);
     }
-  }, [hasAgentAPI]);
+  }, [hasAgentAPI, currentSessionId]);
 
   // ============================================
   // Browser Connection (via Agent)
@@ -330,18 +323,10 @@ export function useReActAgent(): ReActAgentHookReturn {
       const result = await window.electronAPI.connectBrowser(cdpUrl);
       if (result.success) {
         setIsConnected(true);
-        setIsLoadingPageInfo(true);
         updateMessage(msgId, {
           content: `✓ 已连接到浏览器 ${cdpUrl}`,
           status: 'success'
         });
-        // Fetch current page info after connecting
-        try {
-          const pageInfo = await window.electronAPI.getPageInfo();
-          setCurrentPageInfo(pageInfo);
-        } finally {
-          setIsLoadingPageInfo(false);
-        }
       } else {
         updateMessage(msgId, {
           content: `✗ 连接失败: ${result.error}`,
@@ -367,7 +352,6 @@ export function useReActAgent(): ReActAgentHookReturn {
     try {
       await window.electronAPI.disconnectBrowser();
       setIsConnected(false);
-      setCurrentPageInfo(null);
       addMessage('agent', '✓ 已断开浏览器连接', 'success');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -428,7 +412,11 @@ export function useReActAgent(): ReActAgentHookReturn {
     setIsRunning(true);
     
     try {
-      const result = await window.electronAPI.agent.executeTask(task);
+      // Execute task with current session ID for continuation
+      const result = await window.electronAPI.agent.executeTask(task, {
+        threadId: currentSessionId || undefined,
+        continueSession: !!currentSessionId,
+      });
       
       if (result.success) {
         // Show success message with summary if available
@@ -455,6 +443,9 @@ export function useReActAgent(): ReActAgentHookReturn {
       }
       
       await refreshStatus();
+      
+      // Refresh sessions to update message count
+      await refreshSessions();
     } catch (e) {
       updateMessage(msgId, {
         content: `✗ 错误: ${e instanceof Error ? e.message : 'Unknown error'}`,
@@ -465,7 +456,7 @@ export function useReActAgent(): ReActAgentHookReturn {
       setIsRunning(false);
       currentTaskMsgRef.current = null;
     }
-  }, [hasAgentAPI, addMessage, updateMessage, refreshStatus]);
+  }, [hasAgentAPI, addMessage, updateMessage, refreshStatus, refreshSessions, currentSessionId]);
 
   const stopTask = useCallback(async () => {
     if (!hasAgentAPI) return;
@@ -485,13 +476,11 @@ export function useReActAgent(): ReActAgentHookReturn {
   // Main Send Message Handler (All Input → Agent)
   // ============================================
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, editCheckpointId?: string) => {
     // Sanitize input
     const sanitized = sanitizeInput(content);
     if (!sanitized) return;
 
-    // Add user message
-    addMessage('user', sanitized);
     setIsProcessing(true);
 
     try {
@@ -514,6 +503,35 @@ export function useReActAgent(): ReActAgentHookReturn {
         return;
       }
 
+      // If editing a previous message, restore checkpoint first
+      if (editCheckpointId) {
+        console.log('Restoring checkpoint before edit:', editCheckpointId);
+        const restoreResult = await window.electronAPI.agent.restoreCheckpoint(editCheckpointId);
+        if (!restoreResult.success) {
+          addMessage('agent', `⚠️ 恢复检查点失败: ${restoreResult.error || '未知错误'}`, 'error');
+          return;
+        }
+        // Reload messages after checkpoint restore via getConversation
+        const conversation = await window.electronAPI.agent.getConversation();
+        if (conversation && conversation.length > 0) {
+          const restoredMessages: AgentChatMessage[] = conversation.map((msg) => ({
+            id: msg.id,
+            role: (msg.role === 'assistant' ? 'agent' : msg.role) as 'user' | 'agent' | 'system',
+            content: msg.content,
+            timestamp: msg.timestamp,
+            status: 'success' as const,
+          }));
+          setMessages(restoredMessages);
+        } else {
+          // No messages in checkpoint, clear the UI
+          setMessages([]);
+        }
+        toast?.info('已恢复到编辑点');
+      }
+
+      // Add user message
+      addMessage('user', sanitized);
+
       // Send directly to agent for processing
       console.log('Sending to ReAct Agent:', sanitized);
       await executeTask(sanitized);
@@ -524,7 +542,7 @@ export function useReActAgent(): ReActAgentHookReturn {
     } finally {
       setIsProcessing(false);
     }
-  }, [addMessage, hasElectronAPI, hasAgentAPI, executeTask]);
+  }, [addMessage, hasElectronAPI, hasAgentAPI, executeTask, toast, setMessages]);
 
   // ============================================
   // Session Management
@@ -536,16 +554,16 @@ export function useReActAgent(): ReActAgentHookReturn {
     try {
       const result = await window.electronAPI.agent.createSession(name, description);
       if (result.success && result.session) {
-        addMessage('system', `📁 会话已创建: ${result.session.name}`, 'success');
+        toast?.success(`会话已创建: ${result.session.name}`);
         await refreshSessions();
         await refreshCheckpoints();
       } else {
-        addMessage('system', `✗ 创建会话失败: ${result.error}`, 'error');
+        toast?.error(`创建会话失败: ${result.error}`);
       }
     } catch (e) {
-      addMessage('system', `✗ 错误: ${e instanceof Error ? e.message : 'Unknown'}`, 'error');
+      toast?.error(`错误: ${e instanceof Error ? e.message : 'Unknown'}`);
     }
-  }, [hasAgentAPI, addMessage, refreshSessions, refreshCheckpoints]);
+  }, [hasAgentAPI, toast, refreshSessions, refreshCheckpoints]);
 
   const loadSession = useCallback(async (sessionId: string) => {
     if (!hasAgentAPI) return;
@@ -553,31 +571,56 @@ export function useReActAgent(): ReActAgentHookReturn {
     try {
       const result = await window.electronAPI.agent.loadSession(sessionId);
       if (result.success) {
-        // Load conversation history from the session and restore to UI
-        const conversation = await window.electronAPI.agent.getConversation();
+        // Set the current session ID
+        setCurrentSessionId(sessionId);
         
-        // Convert backend ConversationMessage to UI AgentChatMessage format
-        const restoredMessages: AgentChatMessage[] = conversation.map(msg => ({
-          id: msg.id,
-          role: msg.role,
-          content: msg.content,
-          timestamp: msg.timestamp,
-          status: 'success' as const,
-        }));
+        // Load conversation history from the session
+        const conversation = await window.electronAPI.agent.getConversation(sessionId);
         
-        // Replace current messages with the loaded conversation
-        setMessages(restoredMessages);
+        if (conversation && conversation.length > 0) {
+          // Convert backend ConversationMessage to UI AgentChatMessage format
+          // Map 'assistant' role to 'agent' for UI compatibility
+          const restoredMessages: AgentChatMessage[] = conversation.map(msg => ({
+            id: msg.id,
+            role: (msg.role === 'assistant' ? 'agent' : msg.role) as 'user' | 'agent' | 'system',
+            content: msg.content,
+            timestamp: msg.timestamp,
+            status: 'success' as const,
+          }));
+          
+          // Replace current messages with the loaded conversation
+          setMessages(restoredMessages);
+          
+          // Show toast for session switch
+          const session = sessions.find(s => s.id === sessionId);
+          const sessionName = session?.name || sessionId.substring(0, 12);
+          toast?.info(`已切换到会话: ${sessionName}`);
+        } else {
+          // No conversation history, clear messages and show toast
+          setMessages([]);
+          
+          const session = sessions.find(s => s.id === sessionId);
+          const sessionName = session?.name || sessionId.substring(0, 12);
+          // Check if metadata showed messages but data is empty (data loss scenario)
+          const expectedMessageCount = session?.messageCount || 0;
+          if (expectedMessageCount > 0) {
+            toast?.error(`已切换到会话: ${sessionName} (历史消息已丢失，可能因为使用了内存模式)`);
+          } else {
+            toast?.info(`已切换到会话: ${sessionName} (无历史消息)`);
+          }
+        }
         
         await refreshSessions();
-        await refreshCheckpoints();
         await refreshStatus();
+        // Also refresh checkpoints for the loaded session
+        await refreshCheckpoints(sessionId);
       } else {
-        addMessage('system', `✗ 加载会话失败: ${result.error}`, 'error');
+        toast?.error(`加载会话失败: ${result.error}`);
       }
     } catch (e) {
-      addMessage('system', `✗ 错误: ${e instanceof Error ? e.message : 'Unknown'}`, 'error');
+      toast?.error(`错误: ${e instanceof Error ? e.message : 'Unknown'}`);
     }
-  }, [hasAgentAPI, addMessage, refreshSessions, refreshCheckpoints, refreshStatus]);
+  }, [hasAgentAPI, toast, refreshSessions, refreshStatus, refreshCheckpoints, sessions, setMessages]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     if (!hasAgentAPI) return;
@@ -585,15 +628,15 @@ export function useReActAgent(): ReActAgentHookReturn {
     try {
       const success = await window.electronAPI.agent.deleteSession(sessionId);
       if (success) {
-        addMessage('system', `🗑️ 会话已删除`, 'success');
+        toast?.success('会话已删除');
         await refreshSessions();
       } else {
-        addMessage('system', `✗ 删除会话失败`, 'error');
+        toast?.error('删除会话失败');
       }
     } catch (e) {
-      addMessage('system', `✗ 错误: ${e instanceof Error ? e.message : 'Unknown'}`, 'error');
+      toast?.error(`错误: ${e instanceof Error ? e.message : 'Unknown'}`);
     }
-  }, [hasAgentAPI, addMessage, refreshSessions]);
+  }, [hasAgentAPI, toast, refreshSessions]);
 
   // ============================================
   // Checkpoint Management
@@ -615,38 +658,70 @@ export function useReActAgent(): ReActAgentHookReturn {
     }
   }, [hasAgentAPI, addMessage, refreshCheckpoints]);
 
-  const restoreCheckpoint = useCallback(async (checkpointId: string) => {
+  const restoreCheckpoint = useCallback(async (checkpointId: string, threadId?: string) => {
     if (!hasAgentAPI) return;
     
+    const targetThreadId = threadId || currentSessionId;
+    if (!targetThreadId) {
+      addMessage('system', `✗ 恢复失败: 没有选择会话`, 'error');
+      return;
+    }
+    
     try {
-      const result = await window.electronAPI.agent.restoreCheckpoint(checkpointId);
-      if (result.success) {
-        addMessage('system', `⏪ 已恢复到检查点`, 'success');
+      const result = await window.electronAPI.agent.restoreCheckpoint(targetThreadId, checkpointId);
+      if (result.success && result.state) {
+        // Restore messages from the checkpoint
+        if (result.state.messages && result.state.messages.length > 0) {
+          const restoredMessages: AgentChatMessage[] = result.state.messages.map((msg: { id: string; role: string; content: string; timestamp: string }) => ({
+            id: msg.id,
+            role: (msg.role === 'assistant' ? 'agent' : msg.role) as 'user' | 'agent' | 'system',
+            content: msg.content,
+            timestamp: msg.timestamp,
+            status: 'success' as const,
+          }));
+          setMessages(restoredMessages);
+        }
+        
+        toast?.success('已恢复到检查点');
         await refreshStatus();
-        await refreshCheckpoints();
+        await refreshCheckpoints(targetThreadId);
       } else {
-        addMessage('system', `✗ 恢复失败: ${result.error}`, 'error');
+        addMessage('system', `✗ 恢复失败: ${result.error || '检查点未找到'}`, 'error');
       }
     } catch (e) {
       addMessage('system', `✗ 错误: ${e instanceof Error ? e.message : 'Unknown'}`, 'error');
     }
-  }, [hasAgentAPI, addMessage, refreshStatus, refreshCheckpoints]);
+  }, [hasAgentAPI, addMessage, refreshStatus, refreshCheckpoints, currentSessionId, toast, setMessages]);
 
-  const restoreLatest = useCallback(async () => {
+  const restoreLatest = useCallback(async (threadId?: string) => {
     if (!hasAgentAPI) return;
     
+    const targetThreadId = threadId || currentSessionId;
+    
     try {
-      const result = await window.electronAPI.agent.restoreLatest();
-      if (result.success) {
-        addMessage('system', `⏪ 已恢复到最新检查点`, 'success');
+      const result = await window.electronAPI.agent.restoreLatest(targetThreadId || undefined);
+      if (result.success && result.state) {
+        // Restore messages from the latest checkpoint
+        if (result.state.messages && result.state.messages.length > 0) {
+          const restoredMessages: AgentChatMessage[] = result.state.messages.map((msg: { id: string; role: string; content: string; timestamp: string }) => ({
+            id: msg.id,
+            role: (msg.role === 'assistant' ? 'agent' : msg.role) as 'user' | 'agent' | 'system',
+            content: msg.content,
+            timestamp: msg.timestamp,
+            status: 'success' as const,
+          }));
+          setMessages(restoredMessages);
+        }
+        
+        toast?.success('已恢复到最新检查点');
         await refreshStatus();
       } else {
-        addMessage('system', `✗ 恢复失败: ${result.error}`, 'error');
+        addMessage('system', `✗ 恢复失败: ${result.error || '无可用检查点'}`, 'error');
       }
     } catch (e) {
       addMessage('system', `✗ 错误: ${e instanceof Error ? e.message : 'Unknown'}`, 'error');
     }
-  }, [hasAgentAPI, addMessage, refreshStatus]);
+  }, [hasAgentAPI, addMessage, refreshStatus, currentSessionId, toast, setMessages]);
 
   const deleteCheckpoint = useCallback(async (checkpointId: string) => {
     if (!hasAgentAPI) return;
@@ -688,12 +763,6 @@ export function useReActAgent(): ReActAgentHookReturn {
     if (window.electronAPI.onBrowserStatusChanged) {
       unsubscribeStatus = window.electronAPI.onBrowserStatusChanged((status) => {
         setIsConnected(status.connected);
-        if (status.connected) {
-          // Refresh page info when connected
-          window.electronAPI.getPageInfo().then(info => {
-            setCurrentPageInfo(info);
-          }).catch(() => {});
-        }
       });
     }
 
@@ -729,6 +798,15 @@ export function useReActAgent(): ReActAgentHookReturn {
         setStatus(data.status);
       })
     );
+
+    // Subscribe to trace ID updates
+    if (window.electronAPI.agent.onTraceId) {
+      unsubscribers.push(
+        window.electronAPI.agent.onTraceId((data) => {
+          setTraceId(data.traceId);
+        })
+      );
+    }
 
     unsubscribers.push(
       window.electronAPI.agent.onPlanCreated((data) => {
@@ -878,17 +956,6 @@ export function useReActAgent(): ReActAgentHookReturn {
     };
   }, [hasAgentAPI, refreshSessions, refreshCheckpoints]);
 
-  // Auto-refresh page info periodically when connected
-  useEffect(() => {
-    if (!isConnected) return;
-    
-    const interval = setInterval(() => {
-      refreshPageInfo(false);
-    }, 5000);
-    
-    return () => clearInterval(interval);
-  }, [isConnected, refreshPageInfo]);
-
   // ============================================
   // Return Hook Interface
   // ============================================
@@ -901,14 +968,13 @@ export function useReActAgent(): ReActAgentHookReturn {
     // Connection State
     isConnected,
     isProcessing,
-    currentPageInfo,
-    isLoadingPageInfo,
     
     // Agent State
     currentPlan,
     progress,
     status,
     isRunning,
+    traceId,
     
     // Sessions & Checkpoints
     sessions,
@@ -941,7 +1007,6 @@ export function useReActAgent(): ReActAgentHookReturn {
     refreshCheckpoints,
     
     // Utility
-    refreshPageInfo,
     refreshStatus,
     clearMessages,
   };

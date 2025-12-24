@@ -6,15 +6,74 @@
  */
 
 import { ChatAnthropic } from '@langchain/anthropic';
-import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, AIMessage, BaseMessage } from '@langchain/core/messages';
 import type { AgentState } from '../state';
 import { loadLLMConfig } from '../config';
 import { createAgentLogger, startTimer } from '../tracing';
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage, CHAT_RESPONSES } from './prompts';
-import type { PlannerDecision, PlannerHistoryEntry } from './types';
-import { summarizeActionResult, summarizeHistoryResult, formatFullDataAsMarkdown } from './summarize';
+import type { PlannerDecision } from './types';
+import { formatFullDataAsMarkdown } from './summarize';
 
 const log = createAgentLogger('PlannerNode');
+
+/**
+ * Coerce a potentially serialized message to a proper BaseMessage instance.
+ * This handles messages restored from checkpoints that are plain objects.
+ */
+function coerceToBaseMessage(msg: unknown): BaseMessage {
+  // Already a proper BaseMessage instance
+  if (msg instanceof BaseMessage) {
+    return msg;
+  }
+  
+  // Handle LangChain serialized format (from checkpoint)
+  if (msg && typeof msg === 'object') {
+    const obj = msg as Record<string, unknown>;
+    
+    // Check for lc_serializable format
+    if (obj.lc_serializable && obj.lc_kwargs) {
+      const kwargs = obj.lc_kwargs as Record<string, unknown>;
+      const content = (kwargs.content as string) || '';
+      const namespace = obj.lc_namespace as string[] | undefined;
+      
+      // Determine message type from namespace or structure
+      if (namespace && namespace.includes('messages')) {
+        // Check if it's an AIMessage (has tool_calls)
+        if ('tool_calls' in kwargs || 'invalid_tool_calls' in kwargs) {
+          return new AIMessage({ content });
+        }
+      }
+      
+      // Default to AIMessage for unknown serialized messages
+      return new AIMessage({ content });
+    }
+    
+    // Handle plain object with type indicator
+    if ('type' in obj || '_type' in obj) {
+      const msgType = (obj.type || obj._type) as string;
+      const content = (obj.content as string) || '';
+      
+      switch (msgType) {
+        case 'human':
+          return new HumanMessage(content);
+        case 'ai':
+          return new AIMessage(content);
+        case 'system':
+          return new SystemMessage(content);
+        default:
+          return new AIMessage(content);
+      }
+    }
+    
+    // Last resort: if it has content, treat as AIMessage
+    if ('content' in obj) {
+      return new AIMessage((obj.content as string) || '');
+    }
+  }
+  
+  // Fallback: convert to string
+  return new AIMessage(String(msg));
+}
 
 /**
  * Configuration for the planner node
@@ -175,26 +234,30 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         };
       }
 
-      // Build history from action history with smart summarization
-      const history: PlannerHistoryEntry[] = state.actionHistory.map(a => ({
+      // Build history from action history (simplified - no result detail needed)
+      const history = state.actionHistory.map(a => ({
         step: a.thought || a.tool,
-        result: a.result?.success 
-          ? (a.result.data ? summarizeHistoryResult(a.result.data) : '成功')
-          : (a.result?.error || '未知错误'),
         success: a.result?.success ?? false,
       }));
 
-      // Get last action result with smart summarization
+      // Get last action result with raw data (no summarization - let LLM interpret)
       const lastAction = state.actionHistory[state.actionHistory.length - 1];
+      
+      // Debug: log raw action result data
+      if (lastAction?.result?.data) {
+        log.debugWithTrace(traceContext!, '[PLANNER] Raw action result data', {
+          rawDataPreview: JSON.stringify(lastAction.result.data).slice(0, 800),
+        });
+      }
+      
       const lastActionResult = lastAction?.result ? {
         step: lastAction.thought || lastAction.tool,
         success: lastAction.result.success,
-        message: lastAction.result.success 
-          ? (lastAction.result.data ? summarizeActionResult(lastAction.result.data) : '操作成功')
-          : (lastAction.result.error || '操作失败'),
+        data: lastAction.result.data,  // Pass raw data, let prompts.ts format it
+        error: lastAction.result.error,
       } : undefined;
 
-      // Build user message
+      // Build user message with memory context
       const userMessage = buildPlannerUserMessage({
         goal: state.goal,
         observation: {
@@ -205,6 +268,11 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         lastActionResult,
         history,
         iterationCount: state.iterationCount,
+        memoryContext: state.memoryContext ? {
+          contextSummary: state.memoryContext.contextSummary,
+          relevantFacts: state.memoryContext.relevantFacts,
+          recentTasks: state.memoryContext.recentTasks,
+        } : undefined,
       });
 
       // Log detailed planner context for tracing
@@ -219,17 +287,39 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         messageLength: userMessage.length,
       });
       
-      // Log full user message at debug level
-      log.debugWithTrace(traceContext!, '[PLANNER] Full user message', {
-        userMessage,
-      });
-
       // Call LLM
+      // Coerce state.messages to proper BaseMessage instances (handles checkpoint deserialization)
+      const coercedHistory = state.messages.map(coerceToBaseMessage);
       const messages = [
         new SystemMessage(PLANNER_SYSTEM_PROMPT),
-        ...state.messages,
+        ...coercedHistory,
         new HumanMessage(userMessage),
       ];
+
+      // Log complete LLM prompt for debugging
+      log.infoWithTrace(traceContext!, '[PLANNER] === LLM Request ===', {
+        model: llmConfig.model,
+        messageCount: messages.length,
+        systemPromptLength: PLANNER_SYSTEM_PROMPT.length,
+        userMessageLength: userMessage.length,
+      });
+      log.debugWithTrace(traceContext!, '[PLANNER] System Prompt', {
+        systemPrompt: PLANNER_SYSTEM_PROMPT,
+      });
+      if (state.messages.length > 0) {
+        log.debugWithTrace(traceContext!, '[PLANNER] Conversation History', {
+          historyMessages: state.messages.map((m, i) => ({
+            index: i,
+            type: m._getType(),
+            content: typeof m.content === 'string' 
+              ? m.content.slice(0, 500) + (m.content.length > 500 ? '...' : '')
+              : JSON.stringify(m.content).slice(0, 500),
+          })),
+        });
+      }
+      log.debugWithTrace(traceContext!, '[PLANNER] User Message', {
+        userMessage,
+      });
 
       const llmStartTime = Date.now();
       const response = await llm!.invoke(messages);
@@ -286,11 +376,13 @@ export function createPlannerNode(config: PlannerNodeConfig) {
           hasFullData: !!fullDataMarkdown,
         });
         timer.end('Task complete');
+        // Coerce messages to ensure they're proper BaseMessage instances
+        const coercedMessages = state.messages.map(coerceToBaseMessage);
         return {
           status: 'complete',
           isComplete: true,
           result: finalResult,
-          messages: [...state.messages, new AIMessage(responseText)],
+          messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
         };
       }
 
@@ -300,11 +392,13 @@ export function createPlannerNode(config: PlannerNodeConfig) {
           question: decision.question,
         });
         timer.end('Needs clarification');
+        // Coerce messages to ensure they're proper BaseMessage instances
+        const coercedMessages = state.messages.map(coerceToBaseMessage);
         return {
           status: 'complete',
           isComplete: true,
           result: `❓ ${decision.question || '请提供更多信息'}`,
-          messages: [...state.messages, new AIMessage(responseText)],
+          messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
         };
       }
 
@@ -314,12 +408,14 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         thought: decision.thought?.slice(0, 150),
       });
       timer.end('Next step decided');
+      // Coerce messages to ensure they're proper BaseMessage instances
+      const coercedMessages = state.messages.map(coerceToBaseMessage);
       return {
         status: 'planning',
         // Store the next step instruction for CodeAct
         currentInstruction: decision.nextStep,
         plannerThought: decision.thought,
-        messages: [...state.messages, new AIMessage(responseText)],
+        messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
       };
 
     } catch (error) {

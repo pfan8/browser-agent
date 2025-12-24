@@ -63,7 +63,6 @@ export interface PlannerObservation {
  */
 export interface PlannerHistoryEntry {
   step: string;           // What was requested
-  result: string;         // What happened
-  success: boolean;
+  success: boolean;       // Whether it succeeded
 }
 

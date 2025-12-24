@@ -1,40 +1,27 @@
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff', 'primaryBorderColor': '#4338ca', 'lineColor': '#6366f1', 'secondaryColor': '#f0abfc', 'tertiaryColor': '#c4b5fd'}}}%%
 flowchart TD
-    subgraph ReAct["🔄 ReAct Loop"]
-        START([▶ START]) --> observe
-        
-        observe["👁 OBSERVE<br/><small>Capture browser state</small><br/><small>• URL, Title, Content</small><br/><small>• Load state (SA-01)</small><br/><small>• Content hash (SA-06)</small>"]
-        
-        think["🧠 THINK<br/><small>LLM reasoning</small><br/><small>• Analyze observation</small><br/><small>• Plan next action</small><br/><small>• Rule fallback (RA-08)</small>"]
-        
-        act["⚡ ACT<br/><small>Execute action</small><br/><small>• Browser tools</small><br/><small>• Retry logic (ER-02)</small><br/><small>• Selector fallback (ER-01)</small>"]
+    subgraph AgentLoop["🔄 Planner + CodeAct Loop"]
+        START([▶ START])
+        planner["🧠 PLANNER<br/><small>High-level task planning (LLM decides next step)</small>"]
+        codeact["⚡ CODEACT<br/><small>Code generation & execution (Playwright)</small>"]
     end
-    
-    observe -->|"continue"| think
-    observe -->|"error/complete/loop"| END1([🏁 END])
-    
-    think -->|"has action"| act
-    think -->|"no action needed"| observe
-    think -->|"error/complete/loop"| END2([🏁 END])
-    
-    act -->|"continue"| observe
-    act -->|"error/complete/loop"| END3([🏁 END])
-    
+
+    START --> planner
+    codeact --> planner
+    planner -->|"codeact"| codeact
+    planner -->|"end"| END1
+    END1([🏁 END])
+
     subgraph Conditions["📋 Termination Conditions"]
         direction LR
-        C1["RA-05: isComplete = true"]
-        C2["RA-05: maxIterations reached"]
-        C3["RA-06: loopDetected = true"]
-        C4["RA-07: maxConsecutiveFailures"]
-        C5["status = 'error'"]
+        C1["isComplete = true"]
+        C2["status = 'error'"]
+        C3["maxIterations reached"]
     end
-    
-    style observe fill:#06b6d4,stroke:#0891b2,color:#fff
-    style think fill:#a855f7,stroke:#9333ea,color:#fff
-    style act fill:#22c55e,stroke:#16a34a,color:#fff
+
     style START fill:#6366f1,stroke:#4f46e5,color:#fff
+    style planner fill:#a855f7,stroke:#9333ea,color:#fff
+    style codeact fill:#22c55e,stroke:#16a34a,color:#fff
     style END1 fill:#ef4444,stroke:#dc2626,color:#fff
-    style END2 fill:#ef4444,stroke:#dc2626,color:#fff
-    style END3 fill:#ef4444,stroke:#dc2626,color:#fff
-    style ReAct fill:#f8fafc,stroke:#e2e8f0
+    style AgentLoop fill:#f8fafc,stroke:#e2e8f0
     style Conditions fill:#fef3c7,stroke:#fcd34d

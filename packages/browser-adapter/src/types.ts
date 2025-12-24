@@ -18,8 +18,15 @@ export interface CodeExecutionResult {
   stackTrace?: string;    // Full stack trace when error occurs
   errorType?: string;     // Error type (SyntaxError, TimeoutError, etc.)
   errorLine?: number;     // Line number where error occurred in the code
-  pageUrl?: string;       // Page URL at execution time
-  pageTitle?: string;     // Page title at execution time
+}
+
+/**
+ * Context information for UI display
+ */
+export interface ContextInfo {
+  index: number;
+  pageCount: number;
+  isActive: boolean;
 }
 
 /**
@@ -27,8 +34,6 @@ export interface CodeExecutionResult {
  */
 export interface BrowserStatus {
   connected: boolean;
-  url?: string;
-  title?: string;
 }
 
 /**
@@ -48,8 +53,12 @@ export interface IBrowserAdapter {
   getLastConnectionError(): string | null;
   
   // Code execution - THE core method
-  // Code has access to: page, context, browser (Playwright objects)
+  // Code has access to: context, browser (Playwright objects)
   runCode(code: string): Promise<CodeExecutionResult>;
+  
+  // Context management
+  getContextsInfo(): Promise<ContextInfo[]>;
+  switchContext(index: number): Promise<CodeExecutionResult>;
   
   // Events
   on(event: string, handler: (...args: unknown[]) => void): void;

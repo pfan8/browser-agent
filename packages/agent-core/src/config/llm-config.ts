@@ -342,14 +342,14 @@ export function loadLLMConfig(
   // Validate and auto-fix model-specific configurations
   const validatedConfig = validateAndFixConfig(mergedConfig);
 
-  console.log("================================================")
-  console.log("[LLMConfig] Default Config:", DEFAULT_LLM_CONFIG);
-  console.log("[LLMConfig] File Config:", fileConfig);
-  console.log("[LLMConfig] Env Config:", envConfig);
-  console.log("[LLMConfig] Overrides:", overrides);
-  console.log("[LLMConfig] Merged Config:", mergedConfig);
-  console.log("[LLMConfig] Validated Config:", validatedConfig);
-  console.log("================================================");
+  // console.log("================================================")
+  // console.log("[LLMConfig] Default Config:", DEFAULT_LLM_CONFIG);
+  // console.log("[LLMConfig] File Config:", fileConfig);
+  // console.log("[LLMConfig] Env Config:", envConfig);
+  // console.log("[LLMConfig] Overrides:", overrides);
+  // console.log("[LLMConfig] Merged Config:", mergedConfig);
+  // console.log("[LLMConfig] Validated Config:", validatedConfig);
+  // console.log("================================================");
   
   // Cache the config
   if (!overrides && !customConfigPath) {

@@ -36,7 +36,40 @@ export {
 } from './codeact';
 
 // Checkpointer
-export { createCheckpointer, defaultCheckpointer, type CheckpointerConfig, type CheckpointerType } from './checkpointer';
+export { 
+  createCheckpointer, 
+  defaultCheckpointer, 
+  SqliteCheckpointer,
+  PersistentCheckpointer,
+  ThreadMetadataStore,
+  type CheckpointerConfig, 
+  type CheckpointerType,
+  type ThreadMetadata,
+  type CheckpointHistoryItem,
+} from './checkpointer';
+
+// Memory module
+export {
+  // Store and Manager
+  SqliteMemoryStore,
+  MemoryManager,
+  // Types
+  type Memory,
+  type MemoryNamespace,
+  type MemoryImportance,
+  type MemoryMetadata,
+  type CreateMemoryInput,
+  type UpdateMemoryInput,
+  type MemorySearchOptions,
+  type IMemoryStore,
+  type MemoryStoreStats,
+  type MemoryExtractionResult,
+  type MemoryManagerConfig,
+  type UserPreferencesMemory,
+  type FactMemory,
+  type TaskSummaryMemory,
+  type LearnedPathMemory,
+} from './memory';
 
 // Configuration
 export { 

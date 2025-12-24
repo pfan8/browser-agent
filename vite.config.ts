@@ -33,6 +33,12 @@ export default defineConfig({
                 '@chat-agent/agent-core'
               ]
             }
+          },
+          // Exclude directories that change at runtime from triggering rebuilds
+          server: {
+            watch: {
+              ignored: ['**/logs/**', '**/recordings/**', '**/test-results/**', '**/node_modules/**']
+            }
           }
         }
       },
@@ -45,6 +51,11 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist-electron'
+          },
+          server: {
+            watch: {
+              ignored: ['**/logs/**', '**/recordings/**', '**/test-results/**', '**/node_modules/**']
+            }
           }
         }
       }
@@ -60,6 +71,19 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist'
+  },
+  // Global watch ignore - prevent runtime-generated files from triggering rebuilds
+  server: {
+    watch: {
+      ignored: [
+        '**/logs/**', 
+        '**/recordings/**', 
+        '**/test-results/**', 
+        '**/release/**',
+        '**/dist/**',
+        '**/dist-electron/**'
+      ]
+    }
   }
 })
 

@@ -17,11 +17,13 @@ import {
 } from '@chat-agent/browser-adapter';
 import { 
   BrowserAgent, 
-  createCheckpointer,
+  PersistentCheckpointer,
   configureAgentLogger,
   type AgentState,
   type AgentConfig,
   type StructuredLogEntry,
+  type ThreadMetadata,
+  type CheckpointHistoryItem,
 } from '@chat-agent/agent-core';
 import { operationRecorder } from './operation-recorder';
 import { settingsStore } from './settings-store';
@@ -112,6 +114,14 @@ try {
   // Module not available, continue normally
 }
 
+// Chromium flags to improve stability
+// Prevent GPU process crashes from affecting the app
+app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
+// Ignore GPU blocklist for compatibility
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+// Use in-process network service to avoid crashes
+app.commandLine.appendSwitch('enable-features', 'NetworkServiceInProcess');
+
 // Single instance lock
 const isDevelopment = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -186,6 +196,20 @@ function getBrowserAdapter(): IBrowserAdapter {
   return browserAdapter;
 }
 
+// Persistent checkpointer instance (uses LangGraph's SqliteSaver)
+let persistentCheckpointer: PersistentCheckpointer | null = null;
+
+// Get or create persistent checkpointer
+function getPersistentCheckpointer(): PersistentCheckpointer {
+  if (!persistentCheckpointer) {
+    const dataPath = app.getPath('userData');
+    const dbPath = require('path').join(dataPath, 'data', 'checkpoints.db');
+    persistentCheckpointer = new PersistentCheckpointer(dbPath);
+    log.info('Persistent checkpointer initialized (LangGraph SqliteSaver)', { dbPath });
+  }
+  return persistentCheckpointer;
+}
+
 // Initialize agent
 function getAgent(): BrowserAgent {
   const savedSettings = settingsStore.getLLMSettings();
@@ -199,7 +223,11 @@ function getAgent(): BrowserAgent {
     log.info(`Initializing Agent: hasApiKey=${hasApiKey}, keyPreview=${keyPreview}, baseUrl=${savedSettings.baseUrl || 'default'}, mode=${executionMode}`);
     
     const adapter = getBrowserAdapter();
-    const checkpointer = createCheckpointer({ type: 'memory' });
+    const checkpointer = getPersistentCheckpointer();
+    
+    // Memory database path
+    const dataPath = app.getPath('userData');
+    const memoryDbPath = require('path').join(dataPath, 'data', 'memory.db');
     
     agent = new BrowserAgent({
       browserAdapter: adapter,
@@ -213,10 +241,12 @@ function getAgent(): BrowserAgent {
         enableScreenshots: false,
         executionMode,
       },
+      memoryDbPath,
     });
     
     agent.compile(checkpointer);
     agentInitialized = true;
+    log.info('Agent initialized with SQLite persistence and long-term memory');
   }
   
   return agent;
@@ -238,6 +268,9 @@ async function saveCurrentTabInfo(): Promise<void> {
   
   try {
     const result = await browserAdapter.runCode(`
+      const pages = context.pages().filter(p => !p.url().startsWith('chrome://'));
+      if (pages.length === 0) return null;
+      const page = pages[0];
       return { url: page.url(), title: await page.title() };
     `);
     if (result.success && result.result) {
@@ -275,7 +308,7 @@ async function restoreLastTab(): Promise<void> {
         if (url.startsWith('chrome://') || url.startsWith('about:')) continue;
         let title = 'Untitled';
         try { title = await p.title(); } catch {}
-        result.push({ index: result.length, url, title, active: p === page });
+        result.push({ index: result.length, url, title });
       }
       return result;
     `);
@@ -285,7 +318,7 @@ async function restoreLastTab(): Promise<void> {
       return;
     }
     
-    const tabs = listResult.result as Array<{ index: number; url: string; title: string; active: boolean }>;
+    const tabs = listResult.result as Array<{ index: number; url: string; title: string }>;
     
     // Try to find a tab that matches the saved URL
     const matchingTabIndex = tabs.findIndex(tab => tab.url === lastTab.url);
@@ -349,13 +382,36 @@ function safeSerialize(data: unknown): unknown {
   }
 }
 
+// Flag to track if we're already in the process of quitting
+let isQuitting = false;
+
+// Check if window is still valid and can receive messages
+function isWindowValid(): boolean {
+  // Skip all IPC during quit process
+  if (isQuitting) return false;
+  
+  try {
+    return !!(mainWindow && 
+             !mainWindow.isDestroyed() && 
+             mainWindow.webContents && 
+             !mainWindow.webContents.isDestroyed());
+  } catch {
+    return false;
+  }
+}
+
 // Safe send to renderer
 function safeSend(channel: string, data: unknown): void {
-  if (!mainWindow) return;
+  if (!isWindowValid()) return;
   try {
     const serialized = safeSerialize(data);
-    mainWindow.webContents.send(channel, serialized);
+    mainWindow!.webContents.send(channel, serialized);
   } catch (e) {
+    // Ignore errors when window is closing - this is expected behavior
+    if (e instanceof Error && e.message.includes('disposed')) {
+      log.debug('Window disposed, skipping IPC send');
+      return;
+    }
     log.error('Error sending to renderer:', e);
   }
 }
@@ -365,36 +421,26 @@ function setupBrowserAdapterEvents(adapter: IBrowserAdapter) {
   adapter.on('operation', (...args: unknown[]) => {
     const operation = args[0] as Operation;
     operationRecorder.addOperation(operation);
-    if (mainWindow) {
-      mainWindow.webContents.send('operation-recorded', operation);
-    }
+    safeSend('operation-recorded', operation);
   });
 
   adapter.on('connected', (...args: unknown[]) => {
     const data = args[0] as { url: string };
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'connected', data });
-    }
+    safeSend('browser-event', { type: 'connected', data });
   });
 
   adapter.on('disconnected', () => {
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'disconnected', data: null });
-    }
+    safeSend('browser-event', { type: 'disconnected', data: null });
   });
 
   adapter.on('pageLoad', (...args: unknown[]) => {
     const data = args[0] as { url: string };
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'pageLoad', data });
-    }
+    safeSend('browser-event', { type: 'pageLoad', data });
   });
 
   adapter.on('console', (...args: unknown[]) => {
     const data = args[0] as { type: string; text: string };
-    if (mainWindow) {
-      mainWindow.webContents.send('browser-event', { type: 'console', data });
-    }
+    safeSend('browser-event', { type: 'console', data });
   });
 }
 
@@ -412,12 +458,10 @@ async function autoConnectBrowser(): Promise<void> {
       const result = await adapter.connect(cdpUrl);
       if (result.success) {
         log.info(`Auto-connected to browser at ${cdpUrl}`);
-        if (mainWindow) {
-          mainWindow.webContents.send('browser-status-changed', { 
-            connected: true, 
-            cdpUrl 
-          });
-        }
+        safeSend('browser-status-changed', { 
+          connected: true, 
+          cdpUrl 
+        });
         
         // Try to restore to last active tab after successful connection
         await restoreLastTab();
@@ -457,33 +501,77 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
-  // Save current tab info before closing
-  await saveCurrentTabInfo();
-  
   if (process.platform !== 'darwin') {
+    // Save current tab info before closing (only if not already quitting)
+    if (!isQuitting) {
+      isQuitting = true;
+      await saveCurrentTabInfo().catch(() => {});
+    }
     app.quit();
   }
 });
 
 // Save tab info before quitting
 app.on('before-quit', async (event) => {
-  // Prevent immediate quit to save tab info
-  event.preventDefault();
-  await saveCurrentTabInfo();
-  // Now actually quit
-  app.exit(0);
+  // Only save once
+  if (!isQuitting) {
+    isQuitting = true;
+    event.preventDefault();
+    try {
+      await saveCurrentTabInfo();
+    } catch (e) {
+      log.debug('Failed to save tab info during quit, continuing anyway');
+    }
+    // Now actually quit
+    app.exit(0);
+  }
 });
 
 process.on('SIGTERM', async () => {
   log.info('Received SIGTERM, shutting down...');
-  await saveCurrentTabInfo();
+  if (!isQuitting) {
+    isQuitting = true;
+    await saveCurrentTabInfo().catch(() => {});
+  }
   app.quit();
 });
 
 process.on('SIGINT', async () => {
   log.info('Received SIGINT, shutting down...');
-  await saveCurrentTabInfo();
+  if (!isQuitting) {
+    isQuitting = true;
+    await saveCurrentTabInfo().catch(() => {});
+  }
   app.quit();
+});
+
+// Handle uncaught exceptions to prevent app crashes
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught exception:', error);
+  // Don't exit - let the app continue running
+});
+
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled rejection:', reason);
+  // Don't exit - let the app continue running
+});
+
+// Handle GPU/renderer process crashes gracefully
+app.on('child-process-gone', (_event, details) => {
+  log.warn('Child process gone:', { 
+    type: details.type, 
+    reason: details.reason,
+    exitCode: details.exitCode 
+  });
+  // Don't exit - Electron will restart the process automatically
+});
+
+app.on('render-process-gone', (_event, _webContents, details) => {
+  log.warn('Render process gone:', { 
+    reason: details.reason,
+    exitCode: details.exitCode 
+  });
+  // Don't exit - the window can be reloaded
 });
 
 // ============================================
@@ -513,132 +601,24 @@ ipcMain.handle('get-browser-status', async () => {
 });
 
 // ============================================
-// IPC Handlers - Browser Operations (via runCode)
+// IPC Handlers - Browser Operations
 // ============================================
 
-ipcMain.handle('navigate', async (_event, url: string) => {
-  const adapter = getBrowserAdapter();
-  const fullUrl = url.startsWith('http') ? url : `https://${url}`;
-  return adapter.runCode(`
-    await page.goto(${JSON.stringify(fullUrl)}, { waitUntil: 'networkidle' });
-    return { success: true, data: { url: page.url() } };
-  `);
-});
-
-ipcMain.handle('click', async (_event, selector: string) => {
-  const adapter = getBrowserAdapter();
-  return adapter.runCode(`
-    await page.click(${JSON.stringify(selector)});
-    return { success: true };
-  `);
-});
-
-ipcMain.handle('type', async (_event, selector: string, text: string) => {
-  const adapter = getBrowserAdapter();
-  return adapter.runCode(`
-    await page.fill(${JSON.stringify(selector)}, ${JSON.stringify(text)});
-    return { success: true };
-  `);
-});
-
-ipcMain.handle('press', async (_event, key: string) => {
-  const adapter = getBrowserAdapter();
-  return adapter.runCode(`
-    await page.keyboard.press(${JSON.stringify(key)});
-    return { success: true };
-  `);
-});
-
-ipcMain.handle('screenshot', async (_event, name?: string) => {
-  const adapter = getBrowserAdapter();
-  const filename = name || `screenshot_${Date.now()}`;
-  return adapter.runCode(`
-    const path = './recordings/${filename}.png';
-    await page.screenshot({ path, fullPage: true });
-    return { success: true, data: { path } };
-  `);
-});
-
-ipcMain.handle('wait-for', async (_event, ms: number) => {
-  const adapter = getBrowserAdapter();
-  return adapter.runCode(`
-    await page.waitForTimeout(${ms});
-    return { success: true };
-  `);
-});
-
-ipcMain.handle('get-page-info', async () => {
-  const adapter = getBrowserAdapter();
-  // Use getStatus() directly instead of runCode to avoid unnecessary logging
-  const status = await adapter.getStatus();
-  return { 
-    url: status.url || '', 
-    title: status.title || '' 
-  };
-});
-
-ipcMain.handle('evaluate-selector', async (_event, description: string) => {
-  const adapter = getBrowserAdapter();
-  const result = await adapter.runCode(`
-    const desc = ${JSON.stringify(description)}.toLowerCase();
-    const selectors = [];
-    const allElements = document.querySelectorAll('button, a, input, [role="button"], [data-testid]');
-    for (const el of allElements) {
-      const text = (el.textContent || '').trim().toLowerCase();
-      const testId = el.getAttribute('data-testid');
-      const ariaLabel = el.getAttribute('aria-label');
-      if (text && text.includes(desc)) {
-        if (testId) selectors.push('[data-testid="' + testId + '"]');
-      }
-      if (ariaLabel && ariaLabel.toLowerCase().includes(desc)) {
-        selectors.push('[aria-label="' + ariaLabel + '"]');
-      }
-    }
-    return { selector: selectors[0] || '', alternatives: selectors.slice(1, 5) };
-  `);
-  if (result.success && result.result) {
-    return result.result;
-  }
-  return { selector: '', alternatives: [] };
-});
-
-ipcMain.handle('list-pages', async () => {
-  const adapter = getBrowserAdapter();
-  const result = await adapter.runCode(`
-    const pages = context.pages();
-    const result = [];
-    for (let i = 0; i < pages.length; i++) {
-      const p = pages[i];
-      const url = p.url();
-      if (url.startsWith('chrome://') || url.startsWith('about:')) continue;
-      let title = 'Untitled';
-      try { title = await p.title(); } catch {}
-      result.push({ index: result.length, url, title, active: p === page });
-    }
-    return result;
-  `);
-  if (result.success && Array.isArray(result.result)) {
-    return result.result;
-  }
-  return [];
-});
-
-ipcMain.handle('switch-to-page', async (_event, index: number) => {
-  const adapter = getBrowserAdapter();
-  return adapter.runCode(`
-    const pages = context.pages().filter(p => !p.url().startsWith('chrome://'));
-    if (${index} < 0 || ${index} >= pages.length) {
-      return { success: false, error: 'Invalid page index' };
-    }
-    const targetPage = pages[${index}];
-    await targetPage.bringToFront();
-    return { success: true, data: { index: ${index}, url: targetPage.url(), title: await targetPage.title() } };
-  `);
-});
-
+// Core code execution - the only way to run browser operations
 ipcMain.handle('run-code', async (_event, code: string) => {
   const adapter = getBrowserAdapter();
   return adapter.runCode(code);
+});
+
+// Context management
+ipcMain.handle('get-contexts-info', async () => {
+  const adapter = getBrowserAdapter();
+  return adapter.getContextsInfo();
+});
+
+ipcMain.handle('switch-context', async (_event, index: number) => {
+  const adapter = getBrowserAdapter();
+  return adapter.switchContext(index);
 });
 
 // ============================================
@@ -725,8 +705,11 @@ ipcMain.handle('is-llm-available', async () => {
 // ============================================
 
 // Agent Task Execution
-ipcMain.handle('agent-execute-task', async (_event, task: string) => {
-  log.info(`Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`);
+ipcMain.handle('agent-execute-task', async (_event, task: string, options?: { threadId?: string; continueSession?: boolean }) => {
+  log.info(`Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`, { 
+    threadId: options?.threadId,
+    continueSession: options?.continueSession,
+  });
   try {
     const agentInstance = getAgent();
     
@@ -741,7 +724,11 @@ ipcMain.handle('agent-execute-task', async (_event, task: string) => {
     let lastPlannerThought = '';
     let lastInstruction = '';
     
-    for await (const event of agentInstance.streamTask(task)) {
+    // Use provided threadId or continue existing session
+    const threadId = options?.threadId;
+    const continueSession = options?.continueSession ?? false;
+    
+    for await (const event of agentInstance.streamTask(task, threadId, continueSession)) {
       // Check if task was aborted
       if (event.node === '__abort__') {
         log.info('Task was stopped by user');
@@ -1059,30 +1046,75 @@ ipcMain.handle('agent-get-state', async () => {
 });
 
 // ============================================
-// IPC Handlers - Sessions (Simplified for LangGraph)
+// IPC Handlers - Sessions (SQLite persistence)
 // ============================================
 
-ipcMain.handle('agent-create-session', async (_event, name: string, _description?: string) => {
-  // LangGraph uses thread_id for sessions
-  const sessionId = `session_${Date.now()}`;
-  return { 
-    success: true, 
-    session: { id: sessionId, name } 
-  };
+ipcMain.handle('agent-create-session', async (_event, name: string, description?: string) => {
+  try {
+    const agentInstance = getAgent();
+    const session = agentInstance.createSession(name, description);
+    if (session) {
+      return { 
+        success: true, 
+        session: { 
+          id: session.threadId, 
+          name: session.name || name,
+          description: session.description,
+          createdAt: session.createdAt,
+        } 
+      };
+    }
+    // Fallback if no SQLite checkpointer
+    const sessionId = `session_${Date.now()}`;
+    return { 
+      success: true, 
+      session: { id: sessionId, name } 
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 });
 
-ipcMain.handle('agent-load-session', async (_event, _sessionId: string) => {
-  // LangGraph sessions are managed by the checkpointer
-  return { success: true };
+ipcMain.handle('agent-load-session', async (_event, sessionId: string) => {
+  try {
+    const agentInstance = getAgent();
+    const state = await agentInstance.loadSessionState(sessionId);
+    if (state) {
+      log.info('Session loaded', { sessionId, messageCount: state.messages?.length || 0 });
+      return { success: true, hasState: true };
+    }
+    return { success: true, hasState: false };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 });
 
 ipcMain.handle('agent-list-sessions', async () => {
-  // Return empty list for now - would need checkpointer integration
-  return [];
+  try {
+    const agentInstance = getAgent();
+    const sessions = agentInstance.listSessions();
+    return sessions.map((s: ThreadMetadata) => ({
+      id: s.threadId,
+      name: s.name || `Session ${s.threadId.substring(0, 8)}`,
+      description: s.description,
+      messageCount: s.messageCount,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    }));
+  } catch (error) {
+    log.warn('Failed to list sessions:', error);
+    return [];
+  }
 });
 
-ipcMain.handle('agent-delete-session', async (_event, _sessionId: string) => {
-  return true;
+ipcMain.handle('agent-delete-session', async (_event, sessionId: string) => {
+  try {
+    const agentInstance = getAgent();
+    return agentInstance.deleteSession(sessionId);
+  } catch (error) {
+    log.warn('Failed to delete session:', error);
+    return false;
+  }
 });
 
 ipcMain.handle('agent-get-current-session', async () => {
@@ -1091,29 +1123,343 @@ ipcMain.handle('agent-get-current-session', async () => {
 });
 
 // ============================================
-// IPC Handlers - Checkpoints (Managed by LangGraph)
+// IPC Handlers - Checkpoints (LangGraph Native)
 // ============================================
 
 ipcMain.handle('agent-create-checkpoint', async (_event, _name: string, _description?: string) => {
-  // LangGraph automatically creates checkpoints
+  // LangGraph automatically creates checkpoints during graph execution
+  // This is kept for API compatibility
   return { success: true, checkpointId: `checkpoint_${Date.now()}` };
 });
 
-ipcMain.handle('agent-list-checkpoints', async () => {
-  // Would need to query the checkpointer
+ipcMain.handle('agent-list-checkpoints', async (_event, threadId?: string) => {
+  try {
+    const agentInstance = getAgent();
+    const currentThreadId = threadId || agentInstance.getCurrentThreadId();
+    
+    if (!currentThreadId) {
   return [];
+    }
+    
+    const history = await agentInstance.getCheckpointHistory(currentThreadId);
+    return history.map((h: CheckpointHistoryItem) => ({
+      id: h.checkpointId,
+      threadId: h.threadId,
+      createdAt: h.createdAt,
+      step: h.step,
+      messagePreview: h.messagePreview,
+      isUserMessage: h.isUserMessage,
+      parentCheckpointId: h.parentCheckpointId,
+    }));
+  } catch (error) {
+    log.warn('Failed to list checkpoints:', error);
+    return [];
+  }
 });
 
-ipcMain.handle('agent-restore-checkpoint', async (_event, _checkpointId: string) => {
-  // Would need checkpointer integration
-  return { success: true };
+ipcMain.handle('agent-get-checkpoint-history', async (_event, threadId: string) => {
+  try {
+    const agentInstance = getAgent();
+    const history = await agentInstance.getCheckpointHistory(threadId);
+    return history.map((h: CheckpointHistoryItem) => ({
+      id: h.checkpointId,
+      threadId: h.threadId,
+      createdAt: h.createdAt,
+      step: h.step,
+      messagePreview: h.messagePreview,
+      isUserMessage: h.isUserMessage,
+      parentCheckpointId: h.parentCheckpointId,
+      metadata: h.metadata,
+    }));
+  } catch (error) {
+    log.warn('Failed to get checkpoint history:', error);
+    return [];
+  }
 });
 
-ipcMain.handle('agent-restore-latest', async () => {
-  return { success: true };
+/**
+ * Extract user goal from a planner HumanMessage content
+ * The content format is: "## Task\n{goal}\n\n## Current Page..."
+ */
+function extractGoalFromPlannerMessage(content: string): string | null {
+  // Match the goal after "## Task\n" and before the next section
+  const match = content.match(/##\s*Task\s*\n([\s\S]*?)(?:\n##|\n\n##|$)/);
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Extract completion message from AI response JSON
+ */
+function extractCompletionFromAIMessage(content: string): string | null {
+  if (!content.trim().startsWith('{')) return null;
+  
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed.isComplete && parsed.completionMessage) {
+      return parsed.completionMessage;
+    }
+    // For final response, use completionMessage
+    if (parsed.completionMessage) {
+      return parsed.completionMessage;
+    }
+  } catch {
+    // Not JSON
+  }
+  return null;
+}
+
+/**
+ * Convert LangGraph state to UI-friendly messages
+ * 
+ * Strategy:
+ * 1. Parse internal LangGraph messages to find user goals and completions
+ * 2. LangGraph HumanMessages contain planner prompts with "## Task\n{goal}"
+ * 3. LangGraph AIMessages contain JSON responses with "completionMessage"
+ */
+function formatStateToUIMessages(state: Record<string, unknown>): Array<{ id: string; role: string; content: string; timestamp: string }> {
+  const uiMessages: Array<{ id: string; role: string; content: string; timestamp: string }> = [];
+  const now = new Date().toISOString();
+  
+  const messages = state.messages as unknown[] | undefined;
+  const result = state.result as string | undefined;
+  const goal = state.goal as string | undefined;
+  const isComplete = state.isComplete as boolean | undefined;
+  
+  log.debug('formatStateToUIMessages', {
+    messageCount: messages?.length || 0,
+    hasResult: !!result,
+    hasGoal: !!goal,
+    isComplete,
+  });
+  
+  // Track seen goals to avoid duplicates
+  const seenGoals = new Set<string>();
+  let lastGoalIdx = -1;
+  
+  if (messages && Array.isArray(messages)) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i] as Record<string, unknown>;
+      if (!msg) continue;
+      
+      // Detect message type
+      let isHuman = false;
+      if (typeof (msg as any)._getType === 'function') {
+        isHuman = (msg as any)._getType() === 'human';
+      } else if (msg.type === 'human' || msg._type === 'human') {
+        isHuman = true;
+      } else if (msg.lc_id && Array.isArray(msg.lc_id)) {
+        isHuman = (msg.lc_id as string[]).some(s => s.includes('HumanMessage'));
+      } else if (typeof msg.id === 'string') {
+        isHuman = (msg.id as string).includes('HumanMessage');
+      }
+      
+      const content = (msg.content ?? (msg.lc_kwargs as any)?.content ?? '') as string;
+      
+      if (isHuman) {
+        // Extract goal from planner prompt
+        const extractedGoal = extractGoalFromPlannerMessage(content);
+        if (extractedGoal && !seenGoals.has(extractedGoal)) {
+          seenGoals.add(extractedGoal);
+          lastGoalIdx = uiMessages.length;
+          uiMessages.push({
+            id: msg.id as string || `user_${i}`,
+            role: 'user',
+            content: extractedGoal,
+            timestamp: now,
+          });
+        }
+      } else {
+        // Check if this is a completion message
+        const completion = extractCompletionFromAIMessage(content);
+        if (completion) {
+          uiMessages.push({
+            id: msg.id as string || `agent_${i}`,
+            role: 'assistant',
+            content: completion,
+            timestamp: now,
+          });
+        }
+      }
+    }
+  }
+  
+  // If no messages extracted but we have goal/result from state, use those
+  if (uiMessages.length === 0 && goal) {
+    uiMessages.push({
+      id: 'user_goal',
+      role: 'user',
+      content: goal,
+      timestamp: now,
+    });
+    
+    if (result) {
+      uiMessages.push({
+        id: 'agent_result',
+        role: 'assistant',
+        content: result,
+        timestamp: now,
+      });
+    }
+  }
+  
+  // If we have a final result that wasn't captured, add it
+  if (result && isComplete) {
+    const lastMsg = uiMessages[uiMessages.length - 1];
+    if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg.content !== result) {
+      // Check if result is already in messages (avoid duplicate)
+      const hasResult = uiMessages.some(m => m.role === 'assistant' && m.content === result);
+      if (!hasResult) {
+        uiMessages.push({
+          id: 'final_result',
+          role: 'assistant',
+          content: result,
+          timestamp: now,
+        });
+      }
+    }
+  }
+  
+  log.debug('formatStateToUIMessages result', {
+    extractedCount: uiMessages.length,
+    userMessages: uiMessages.filter(m => m.role === 'user').length,
+    agentMessages: uiMessages.filter(m => m.role === 'assistant').length,
+  });
+  
+  return uiMessages;
+}
+
+/**
+ * Legacy: Format individual LangGraph message (for backward compatibility)
+ */
+function formatLangGraphMessage(msg: any, idx: number): { id: string; role: string; content: string; timestamp: string } | null {
+  if (!msg) return null;
+  
+  // Detect message type
+  let isHuman = false;
+  
+  if (typeof msg._getType === 'function') {
+    isHuman = msg._getType() === 'human';
+  } else if (msg.type === 'human' || msg._type === 'human') {
+    isHuman = true;
+  } else if (msg.lc_id && Array.isArray(msg.lc_id)) {
+    isHuman = msg.lc_id.some((s: string) => s.includes('HumanMessage'));
+  } else if (typeof msg.id === 'string') {
+    isHuman = msg.id.includes('HumanMessage');
+  }
+  
+  // Extract content
+  const rawContent = msg.content ?? msg.lc_kwargs?.content ?? '';
+  let content = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+  
+  // Try to extract readable message from JSON
+  if (!isHuman && content.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(content);
+      content = parsed.completionMessage || parsed.message || parsed.thought || content;
+    } catch { /* keep original */ }
+  }
+  
+  if (!content?.trim()) return null;
+  
+  return {
+    id: msg.id || `msg_${idx}`,
+    role: isHuman ? 'user' : 'assistant',
+    content,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+ipcMain.handle('agent-restore-checkpoint', async (_event, threadId: string, checkpointId: string) => {
+  try {
+    const agentInstance = getAgent();
+    const state = await agentInstance.restoreToCheckpoint(threadId, checkpointId);
+    
+    if (state) {
+      log.info('Restored to checkpoint', { threadId, checkpointId });
+      
+      // Convert state to UI-friendly messages (goal -> user msg, result -> agent msg)
+      const formattedMessages = formatStateToUIMessages(state as Record<string, unknown>);
+      
+      return { 
+        success: true, 
+        state: {
+          messages: formattedMessages,
+          goal: state.goal,
+          status: state.status,
+          isComplete: state.isComplete,
+        }
+      };
+    }
+    
+    return { success: false, error: 'Checkpoint not found' };
+  } catch (error) {
+    log.error('Failed to restore checkpoint:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('agent-get-state-at-checkpoint', async (_event, threadId: string, checkpointId: string) => {
+  try {
+    const agentInstance = getAgent();
+    const state = await agentInstance.getStateAtCheckpoint(threadId, checkpointId);
+    
+    if (state) {
+      // Convert state to UI-friendly messages
+      const formattedMessages = formatStateToUIMessages(state as Record<string, unknown>);
+      
+      return {
+        messages: formattedMessages,
+        goal: state.goal,
+        status: state.status,
+        isComplete: state.isComplete,
+        actionHistory: state.actionHistory,
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    log.warn('Failed to get state at checkpoint:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('agent-restore-latest', async (_event, threadId?: string) => {
+  try {
+    const agentInstance = getAgent();
+    const targetThreadId = threadId || agentInstance.getCurrentThreadId();
+    
+    if (!targetThreadId) {
+      return { success: false, error: 'No thread ID provided' };
+    }
+    
+    const state = await agentInstance.loadSessionState(targetThreadId);
+    
+    if (state) {
+      const formattedMessages = formatStateToUIMessages(state as Record<string, unknown>);
+      
+      return { 
+        success: true, 
+        state: {
+          messages: formattedMessages,
+          goal: state.goal,
+          status: state.status,
+        }
+      };
+    }
+    
+    return { success: true, state: null };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 });
 
 ipcMain.handle('agent-delete-checkpoint', async (_event, _checkpointId: string) => {
+  // LangGraph manages checkpoints internally
+  // Deleting individual checkpoints is not directly supported
+  log.info('Checkpoint deletion requested (not supported with LangGraph SqliteSaver)');
   return true;
 });
 
@@ -1121,16 +1467,142 @@ ipcMain.handle('agent-delete-checkpoint', async (_event, _checkpointId: string) 
 // IPC Handlers - Memory & History
 // ============================================
 
-ipcMain.handle('agent-get-conversation', async (_event, _limit?: number) => {
-  return [];
+ipcMain.handle('agent-get-conversation', async (_event, sessionIdOrLimit?: string | number, limit?: number) => {
+  try {
+    const agentInstance = getAgent();
+    
+    // Determine if first arg is sessionId or limit
+    let sessionId: string | undefined;
+    let messageLimit: number | undefined;
+    
+    if (typeof sessionIdOrLimit === 'string') {
+      sessionId = sessionIdOrLimit;
+      messageLimit = limit;
+    } else if (typeof sessionIdOrLimit === 'number') {
+      messageLimit = sessionIdOrLimit;
+    }
+    
+    // If sessionId provided, load from that session's state
+    if (sessionId) {
+      const state = await agentInstance.loadSessionState(sessionId);
+      
+      // Check if state exists and has messages
+      const hasMessages = state && state.messages && Array.isArray(state.messages) && state.messages.length > 0;
+      
+      if (hasMessages) {
+        // Convert state to UI conversation format
+        const messages = formatStateToUIMessages(state as Record<string, unknown>);
+        
+        // Apply limit if specified
+        if (messageLimit && messageLimit > 0) {
+          return messages.slice(-messageLimit);
+        }
+        return messages;
+      } else {
+        // State is empty or has no messages - sync metadata to reflect reality
+        // This handles the case where MemorySaver fallback lost data but metadata still shows old count
+        const checkpointer = getPersistentCheckpointer();
+        const isFallback = checkpointer.isUsingFallback();
+        checkpointer.updateThreadActivity(sessionId, 0);
+        log.info('Synced thread metadata - checkpoint data was empty', { sessionId, isFallbackMode: isFallback });
+      }
+    }
+    
+    // No session or no messages found
+    return [];
+  } catch (error) {
+    log.error('Failed to get conversation', { error });
+    return [];
+  }
 });
 
 ipcMain.handle('agent-clear-memory', async () => {
-  return { success: true };
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      await memoryManager.runCleanup();
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 });
 
 ipcMain.handle('agent-get-memory-summary', async () => {
-  return 'Memory managed by LangGraph checkpointer';
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      const stats = await memoryManager.getStats();
+      return `Total memories: ${stats.totalMemories}, Tasks: ${stats.byNamespace.task_summary || 0}, Facts: ${stats.byNamespace.facts || 0}`;
+    }
+    return 'Memory not configured';
+  } catch (error) {
+    return 'Error getting memory summary';
+  }
+});
+
+ipcMain.handle('agent-get-memory-stats', async () => {
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      return await memoryManager.getStats();
+    }
+    return null;
+  } catch (error) {
+    log.warn('Failed to get memory stats:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('agent-get-recent-tasks', async (_event, limit: number = 10) => {
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      const tasks = await memoryManager.getRecentTasks(limit);
+      return tasks;
+    }
+    return [];
+  } catch (error) {
+    log.warn('Failed to get recent tasks:', error);
+    return [];
+  }
+});
+
+ipcMain.handle('agent-save-fact', async (_event, fact: { content: string; category?: string }) => {
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      await memoryManager.saveFact({
+        content: fact.content,
+        category: fact.category,
+        source: 'user',
+        confidence: 1.0,
+      });
+      return { success: true };
+    }
+    return { success: false, error: 'Memory not configured' };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('agent-get-facts', async (_event, category?: string) => {
+  try {
+    const agentInstance = getAgent();
+    const memoryManager = agentInstance.getMemoryManager();
+    if (memoryManager) {
+      return await memoryManager.getFacts({ category });
+    }
+    return [];
+  } catch (error) {
+    log.warn('Failed to get facts:', error);
+    return [];
+  }
 });
 
 // ============================================

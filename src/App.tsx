@@ -4,31 +4,32 @@ import OperationPreview from './components/OperationPreview'
 import SettingsPanel from './components/SettingsPanel'
 import { SessionPanel } from './components/SessionPanel'
 import { ConfirmationDialog } from './components/ConfirmationDialog'
+import { ToastContainer } from './components/Toast'
 import { useReActAgent } from './hooks/useReActAgent'
+import { useToast } from './hooks/useToast'
 import type { ConfirmationRequest } from '../electron/agent/safety/types'
 
-interface TabInfo {
+interface ContextInfo {
   index: number;
-  url: string;
-  title: string;
-  active: boolean;
+  pageCount: number;
+  isActive: boolean;
 }
 
 function App() {
+  // Toast notifications for lightweight feedback
+  const { toasts, dismissToast, success, error, info } = useToast()
+  
   // ReAct Agent hook - all input goes to agent
   const { 
     messages, 
     operations, 
     isConnected, 
     isProcessing,
-    currentPageInfo,
-    isLoadingPageInfo,
     sendMessage, 
     connectBrowser, 
     disconnectBrowser,
     clearRecording,
     exportScript,
-    refreshPageInfo,
     // Agent features
     sessions,
     currentSessionId,
@@ -37,20 +38,19 @@ function App() {
     progress,
     status: agentStatus,
     isRunning: isAgentRunning,
+    traceId,
     stopTask,
     createSession,
     loadSession,
     deleteSession,
-    restoreCheckpoint,
-  } = useReActAgent()
+  } = useReActAgent({ toast: { success, error, info } })
   
   const [showPreview, setShowPreview] = useState(false)
   const [showAgentPanel, setShowAgentPanel] = useState(true)
   const [exportedScript, setExportedScript] = useState<string | null>(null)
-  const [showTabsDropdown, setShowTabsDropdown] = useState(false)
-  const [tabs, setTabs] = useState<TabInfo[]>([])
-  const [loadingTabs, setLoadingTabs] = useState(false)
-  const [tabsFetched, setTabsFetched] = useState(false)
+  const [showContextDropdown, setShowContextDropdown] = useState(false)
+  const [contexts, setContexts] = useState<ContextInfo[]>([])
+  const [loadingContexts, setLoadingContexts] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -59,72 +59,68 @@ function App() {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setShowTabsDropdown(false)
+        setShowContextDropdown(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Fetch tabs (used for initial load and manual refresh)
-  const fetchTabs = useCallback(async () => {
+  // Fetch contexts info
+  const fetchContexts = useCallback(async () => {
     if (!isConnected || !window.electronAPI) return
     
-    setLoadingTabs(true)
+    setLoadingContexts(true)
     try {
-      const pages = await window.electronAPI.listPages()
-      setTabs(pages)
-      setTabsFetched(true)
+      const contextsInfo = await window.electronAPI.getContextsInfo()
+      setContexts(contextsInfo)
     } catch (e) {
-      console.error('Failed to fetch tabs:', e)
+      console.error('Failed to fetch contexts:', e)
     } finally {
-      setLoadingTabs(false)
+      setLoadingContexts(false)
     }
   }, [isConnected])
 
-  // Toggle dropdown - only fetch if not already fetched
-  const handleTabsDropdownToggle = useCallback(() => {
-    const willOpen = !showTabsDropdown
-    setShowTabsDropdown(willOpen)
+  // Toggle context dropdown
+  const handleContextDropdownToggle = useCallback(() => {
+    const willOpen = !showContextDropdown
+    setShowContextDropdown(willOpen)
     
-    // If opening the dropdown and tabs haven't been fetched yet, fetch them
-    if (willOpen && !tabsFetched && isConnected) {
-      fetchTabs()
+    if (willOpen && isConnected) {
+      fetchContexts()
     }
-  }, [showTabsDropdown, tabsFetched, isConnected, fetchTabs])
+  }, [showContextDropdown, isConnected, fetchContexts])
 
-  // Manual refresh tabs
-  const handleRefreshTabs = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation() // Prevent dropdown from closing
-    fetchTabs()
-  }, [fetchTabs])
+  // Manual refresh contexts
+  const handleRefreshContexts = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    fetchContexts()
+  }, [fetchContexts])
 
-  // Reset tabs cache when disconnecting
+  // Reset contexts when disconnecting
   useEffect(() => {
     if (!isConnected) {
-      setTabs([])
-      setTabsFetched(false)
+      setContexts([])
     }
   }, [isConnected])
 
-  // Switch to a tab
-  const handleSwitchTab = useCallback(async (index: number) => {
+  // Switch to a context
+  const handleSwitchContext = useCallback(async (index: number) => {
     if (!window.electronAPI) return
     try {
-      const result = await window.electronAPI.switchToPage(index)
+      const result = await window.electronAPI.switchContext(index)
       if (result.success) {
-        setShowTabsDropdown(false)
-        refreshPageInfo()
-        // Update tabs list to reflect new active tab
-        setTabs(prev => prev.map(tab => ({
-          ...tab,
-          active: tab.index === index
+        setShowContextDropdown(false)
+        // Update contexts list to reflect new active context
+        setContexts(prev => prev.map(ctx => ({
+          ...ctx,
+          isActive: ctx.index === index
         })))
       }
     } catch (e) {
-      console.error('Failed to switch tab:', e)
+      console.error('Failed to switch context:', e)
     }
-  }, [refreshPageInfo])
+  }, [])
 
   const handleExport = useCallback(async () => {
     const script = await exportScript()
@@ -178,65 +174,51 @@ function App() {
             {isConnected ? 'Connected' : 'Disconnected'}
           </div>
           {isConnected && (
-            <div className="tabs-dropdown-container" ref={dropdownRef}>
-              {isLoadingPageInfo ? (
-                <div className="current-page-info loading">
-                  <span className="page-title">Loading page info...</span>
-                  <span className="page-url">
-                    <span className="loading-spinner"></span>
-                  </span>
-                </div>
-              ) : currentPageInfo ? (
-                <div 
-                  className={`current-page-info ${showTabsDropdown ? 'active' : ''}`} 
-                  onClick={handleTabsDropdownToggle}
-                  title="点击查看所有标签页"
-                >
-                  <span className="page-title">{currentPageInfo.title || 'Untitled'}</span>
-                  <span className="page-url">
-                    {currentPageInfo.url}
-                    <span className="dropdown-arrow">{showTabsDropdown ? '▲' : '▼'}</span>
-                  </span>
-                </div>
-              ) : (
-                <div className="current-page-info error">
-                  <span className="page-title">No page info</span>
-                  <span className="page-url" onClick={() => refreshPageInfo(true)}>Click to retry</span>
-                </div>
-              )}
+            <div className="context-dropdown-container" ref={dropdownRef}>
+              <div 
+                className={`context-selector ${showContextDropdown ? 'active' : ''}`} 
+                onClick={handleContextDropdownToggle}
+                title="点击查看所有 Context"
+              >
+                <span className="context-label">
+                  Context #{contexts.find(c => c.isActive)?.index ?? 0} 
+                  ({contexts.find(c => c.isActive)?.pageCount ?? 0} pages)
+                </span>
+                <span className="dropdown-arrow">{showContextDropdown ? '▲' : '▼'}</span>
+              </div>
               
-              {showTabsDropdown && !isLoadingPageInfo && currentPageInfo && (
-                <div className="tabs-dropdown">
-                  <div className="tabs-dropdown-header">
-                    <span>Open Tabs</span>
-                    <div className="tabs-header-right">
-                      <span className="tabs-count">{tabs.length}</span>
+              {showContextDropdown && (
+                <div className="context-dropdown">
+                  <div className="context-dropdown-header">
+                    <span>Browser Contexts</span>
+                    <div className="context-header-right">
+                      <span className="context-count">{contexts.length}</span>
                       <button 
-                        className="tabs-refresh-btn" 
-                        onClick={handleRefreshTabs}
-                        disabled={loadingTabs}
-                        title="刷新标签页列表"
+                        className="context-refresh-btn" 
+                        onClick={handleRefreshContexts}
+                        disabled={loadingContexts}
+                        title="刷新 Context 列表"
                       >
                         ↻
                       </button>
                     </div>
                   </div>
-                  <div className="tabs-dropdown-list">
-                    {loadingTabs ? (
-                      <div className="tabs-loading">Loading...</div>
-                    ) : tabs.length === 0 ? (
-                      <div className="tabs-empty">No tabs found</div>
+                  <div className="context-dropdown-list">
+                    {loadingContexts ? (
+                      <div className="context-loading">Loading...</div>
+                    ) : contexts.length === 0 ? (
+                      <div className="context-empty">No contexts found</div>
                     ) : (
-                      tabs.map(tab => (
+                      contexts.map(ctx => (
                         <div 
-                          key={tab.index}
-                          className={`tabs-dropdown-item ${tab.active ? 'active' : ''}`}
-                          onClick={() => handleSwitchTab(tab.index)}
+                          key={ctx.index}
+                          className={`context-dropdown-item ${ctx.isActive ? 'active' : ''}`}
+                          onClick={() => handleSwitchContext(ctx.index)}
                         >
-                          <span className="tab-indicator">{tab.active ? '●' : '○'}</span>
-                          <div className="tab-info">
-                            <span className="tab-title">{tab.title || 'Untitled'}</span>
-                            <span className="tab-url">{tab.url}</span>
+                          <span className="context-indicator">{ctx.isActive ? '●' : '○'}</span>
+                          <div className="context-info">
+                            <span className="context-name">Context #{ctx.index}</span>
+                            <span className="context-pages">{ctx.pageCount} pages</span>
                           </div>
                         </div>
                       ))
@@ -294,7 +276,6 @@ function App() {
           isProcessing={isProcessing}
           isConnected={isConnected}
           checkpoints={checkpoints}
-          onRestoreCheckpoint={restoreCheckpoint}
           isRunning={isAgentRunning}
           onStop={stopTask}
         />
@@ -314,6 +295,7 @@ function App() {
             progress={progress}
             status={agentStatus}
             isRunning={isAgentRunning}
+            traceId={traceId}
             onCreateSession={createSession}
             onLoadSession={loadSession}
             onDeleteSession={deleteSession}
@@ -357,6 +339,9 @@ function App() {
         onConfirm={handleConfirmAction}
         onCancel={handleCancelConfirmation}
       />
+
+      {/* Toast Notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }

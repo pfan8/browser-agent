@@ -1,0 +1,65 @@
+{
+  "name": "BrowserAgent Graph",
+  "description": "Dynamically extracted from packages/agent-core/src/graph.ts",
+  "architecture": "Planner + CodeAct",
+  "nodes": [
+    {
+      "id": "planner",
+      "name": "Planner Node",
+      "description": "High-level task planning (LLM decides next step)"
+    },
+    {
+      "id": "codeact",
+      "name": "Codeact Node",
+      "description": "Code generation & execution (Playwright)"
+    }
+  ],
+  "edges": [
+    {
+      "from": "__start__",
+      "to": "planner",
+      "type": "normal",
+      "condition": null
+    },
+    {
+      "from": "codeact",
+      "to": "planner",
+      "type": "normal",
+      "condition": null
+    },
+    {
+      "from": "planner",
+      "to": "codeact",
+      "type": "conditional",
+      "condition": "codeact"
+    },
+    {
+      "from": "planner",
+      "to": "__end__",
+      "type": "conditional",
+      "condition": "end"
+    }
+  ],
+  "terminationConditions": [
+    "isComplete = true",
+    "status = 'error'",
+    "maxIterations reached"
+  ],
+  "sourceFile": "packages/agent-core/src/graph.ts",
+  "extractedAt": "2025-12-18T09:53:20.066Z",
+  "defaultConfig": {
+    "maxIterations": 20,
+    "maxConsecutiveFailures": 3,
+    "thinkTimeout": 30000,
+    "actionTimeout": 30000,
+    "observationTimeout": 5000,
+    "enableScreenshots": false,
+    "waitBetweenActions": 500,
+    "maxRetryPerAction": 3,
+    "enableSelectorFallback": true,
+    "enableScrollSearch": true,
+    "maxRepeatedActions": 3,
+    "enableRuleFallback": true,
+    "executionMode": "iterative"
+  }
+}

@@ -2,7 +2,7 @@
 /**
  * LangGraph Visualization Tool
  * 
- * Generates visual representations of the agent-core StateGraph.
+ * Dynamically generates visual representations from the actual agent-core StateGraph.
  * 
  * Usage:
  *   pnpm tsx scripts/visualize-graph.ts [format]
@@ -12,119 +12,283 @@
  *   ascii    - Generate ASCII art representation
  *   png      - Generate PNG image (requires graphviz: brew install graphviz)
  *   json     - Output graph structure as JSON
+ *   raw      - Output raw graph structure from LangGraph
+ * 
+ * Note: Requires packages to be built first (pnpm build:packages)
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { StateGraph, START, END } from '@langchain/langgraph';
+// Import from compiled packages to avoid TypeScript module resolution issues
 import { 
-  AgentStateAnnotation,
-  type AgentState,
-  type AgentConfig,
   DEFAULT_AGENT_CONFIG,
-} from '../packages/agent-core/src/state';
+} from '@chat-agent/agent-core';
+
 
 // ============================================
-// Recreate the graph structure for visualization
-// (We can't use the actual nodes as they require browser adapter)
+// Parse graph structure from source code
 // ============================================
 
-function createVisualizationGraph() {
-  // Create a simplified graph with the same structure as the real agent
-  const graph = new StateGraph(AgentStateAnnotation)
-    .addNode("observe", async (state: AgentState) => ({ status: 'observing' as const }))
-    .addNode("think", async (state: AgentState) => ({ status: 'thinking' as const }))
-    .addNode("act", async (state: AgentState) => ({ status: 'acting' as const }))
-    .addEdge(START, "observe")
-    .addConditionalEdges("observe", (state) => {
-      if (state.status === 'error') return 'end';
-      if (state.isComplete) return 'end';
-      if (state.loopDetected) return 'end';
-      return 'think';
-    }, {
-      think: "think",
-      end: END,
-    })
-    .addConditionalEdges("think", (state) => {
-      if (state.status === 'error') return 'end';
-      if (state.isComplete) return 'end';
-      if (state.loopDetected) return 'end';
-      const latestAction = state.actionHistory[state.actionHistory.length - 1];
-      if (!latestAction || latestAction.result) return 'observe';
-      return 'act';
-    }, {
-      act: "act",
-      observe: "observe",
-      end: END,
-    })
-    .addConditionalEdges("act", (state) => {
-      if (state.status === 'error') return 'end';
-      if (state.isComplete) return 'end';
-      if (state.loopDetected) return 'end';
-      return 'observe';
-    }, {
-      observe: "observe",
-      end: END,
-    });
-
-  return graph;
+interface GraphNode {
+  id: string;
+  description: string;
 }
 
+interface GraphEdge {
+  from: string;
+  to: string;
+  condition?: string;
+  type: 'normal' | 'conditional';
+}
+
+interface GraphStructure {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+/**
+ * Parse the graph.ts file to extract graph structure
+ */
+function parseGraphFromSource(): GraphStructure {
+  const graphPath = path.join(__dirname, '..', 'packages', 'agent-core', 'src', 'graph.ts');
+  const source = fs.readFileSync(graphPath, 'utf-8');
+  
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  
+  // Extract nodes using regex
+  const nodeMatches = source.matchAll(/\.addNode\s*\(\s*["'](\w+)["']/g);
+  for (const match of nodeMatches) {
+    const nodeId = match[1];
+    nodes.push({
+      id: nodeId,
+      description: getNodeDescription(nodeId),
+    });
+  }
+  
+  // Extract normal edges
+  const edgeMatches = source.matchAll(/\.addEdge\s*\(\s*(\w+|["']\w+["'])\s*,\s*["'](\w+)["']\s*\)/g);
+  for (const match of edgeMatches) {
+    const from = match[1].replace(/["']/g, '');
+    const to = match[2];
+    edges.push({
+      from: from === 'START' ? '__start__' : from,
+      to: to === 'END' ? '__end__' : to,
+      type: 'normal',
+    });
+  }
+  
+  // Extract conditional edges
+  const conditionalMatches = source.matchAll(/\.addConditionalEdges\s*\(\s*["'](\w+)["']\s*,\s*[\w()\s=>.,]+,\s*\{([^}]+)\}/g);
+  for (const match of conditionalMatches) {
+    const from = match[1];
+    const mappingStr = match[2];
+    
+    // Parse the mapping object
+    const mappings = mappingStr.matchAll(/(\w+)\s*:\s*(?:["'](\w+)["']|(\w+))/g);
+    for (const m of mappings) {
+      const condition = m[1];
+      const to = m[2] || m[3];
+      edges.push({
+        from,
+        to: to === 'END' ? '__end__' : to,
+        condition,
+        type: 'conditional',
+      });
+    }
+  }
+  
+  return { nodes, edges };
+}
+
+function getNodeDescription(nodeId: string): string {
+  const descriptions: Record<string, string> = {
+    planner: 'High-level task planning (LLM decides next step)',
+    codeact: 'Code generation & execution (Playwright)',
+    observe: 'Capture browser state',
+    think: 'LLM reasoning',
+    act: 'Execute action',
+  };
+  return descriptions[nodeId] || nodeId;
+}
+
+
 // ============================================
-// Generate Mermaid Diagram
+// Generate Mermaid Diagram (Dynamic)
 // ============================================
+
 function generateMermaid(): string {
-  // Custom Mermaid diagram that better represents the ReAct loop
-  return `%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff', 'primaryBorderColor': '#4338ca', 'lineColor': '#6366f1', 'secondaryColor': '#f0abfc', 'tertiaryColor': '#c4b5fd'}}}%%
+  const structure = parseGraphFromSource();
+  
+  const nodeColors: Record<string, { fill: string; stroke: string }> = {
+    planner: { fill: '#a855f7', stroke: '#9333ea' },
+    codeact: { fill: '#22c55e', stroke: '#16a34a' },
+    observe: { fill: '#06b6d4', stroke: '#0891b2' },
+    think: { fill: '#a855f7', stroke: '#9333ea' },
+    act: { fill: '#22c55e', stroke: '#16a34a' },
+  };
+  
+  const nodeIcons: Record<string, string> = {
+    planner: '🧠',
+    codeact: '⚡',
+    observe: '👁',
+    think: '🧠',
+    act: '⚡',
+  };
+  
+  let diagram = `%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff', 'primaryBorderColor': '#4338ca', 'lineColor': '#6366f1', 'secondaryColor': '#f0abfc', 'tertiaryColor': '#c4b5fd'}}}%%
 flowchart TD
-    subgraph ReAct["🔄 ReAct Loop"]
-        START([▶ START]) --> observe
-        
-        observe["👁 OBSERVE<br/><small>Capture browser state</small><br/><small>• URL, Title, Content</small><br/><small>• Load state (SA-01)</small><br/><small>• Content hash (SA-06)</small>"]
-        
-        think["🧠 THINK<br/><small>LLM reasoning</small><br/><small>• Analyze observation</small><br/><small>• Plan next action</small><br/><small>• Rule fallback (RA-08)</small>"]
-        
-        act["⚡ ACT<br/><small>Execute action</small><br/><small>• Browser tools</small><br/><small>• Retry logic (ER-02)</small><br/><small>• Selector fallback (ER-01)</small>"]
-    end
+    subgraph AgentLoop["🔄 Planner + CodeAct Loop"]
+        START([▶ START])`;
+  
+  // Add nodes
+  for (const node of structure.nodes) {
+    const icon = nodeIcons[node.id] || '📦';
+    diagram += `\n        ${node.id}["${icon} ${node.id.toUpperCase()}<br/><small>${node.description}</small>"]`;
+  }
+  
+  diagram += `\n    end\n`;
+  
+  // Add edges
+  const endNodes = new Set<number>();
+  let endCounter = 1;
+  
+  for (const edge of structure.edges) {
+    const from = edge.from === '__start__' ? 'START' : edge.from;
+    let to = edge.to;
     
-    observe -->|"continue"| think
-    observe -->|"error/complete/loop"| END1([🏁 END])
+    if (to === '__end__') {
+      const endId = `END${endCounter}`;
+      endNodes.add(endCounter);
+      endCounter++;
+      to = endId;
+    }
     
-    think -->|"has action"| act
-    think -->|"no action needed"| observe
-    think -->|"error/complete/loop"| END2([🏁 END])
-    
-    act -->|"continue"| observe
-    act -->|"error/complete/loop"| END3([🏁 END])
-    
+    if (edge.condition) {
+      diagram += `\n    ${from} -->|"${edge.condition}"| ${to}`;
+    } else {
+      diagram += `\n    ${from} --> ${to}`;
+    }
+  }
+  
+  // Add END node definitions
+  for (const n of endNodes) {
+    diagram += `\n    END${n}([🏁 END])`;
+  }
+  
+  // Add termination conditions box
+  diagram += `\n
     subgraph Conditions["📋 Termination Conditions"]
         direction LR
-        C1["RA-05: isComplete = true"]
-        C2["RA-05: maxIterations reached"]
-        C3["RA-06: loopDetected = true"]
-        C4["RA-07: maxConsecutiveFailures"]
-        C5["status = 'error'"]
-    end
-    
-    style observe fill:#06b6d4,stroke:#0891b2,color:#fff
-    style think fill:#a855f7,stroke:#9333ea,color:#fff
-    style act fill:#22c55e,stroke:#16a34a,color:#fff
-    style START fill:#6366f1,stroke:#4f46e5,color:#fff
-    style END1 fill:#ef4444,stroke:#dc2626,color:#fff
-    style END2 fill:#ef4444,stroke:#dc2626,color:#fff
-    style END3 fill:#ef4444,stroke:#dc2626,color:#fff
-    style ReAct fill:#f8fafc,stroke:#e2e8f0
+        C1["isComplete = true"]
+        C2["status = 'error'"]
+        C3["maxIterations reached"]
+    end`;
+  
+  // Add styles
+  diagram += `\n
+    style START fill:#6366f1,stroke:#4f46e5,color:#fff`;
+  
+  for (const node of structure.nodes) {
+    const colors = nodeColors[node.id] || { fill: '#64748b', stroke: '#475569' };
+    diagram += `\n    style ${node.id} fill:${colors.fill},stroke:${colors.stroke},color:#fff`;
+  }
+  
+  for (const n of endNodes) {
+    diagram += `\n    style END${n} fill:#ef4444,stroke:#dc2626,color:#fff`;
+  }
+  
+  diagram += `\n    style AgentLoop fill:#f8fafc,stroke:#e2e8f0
     style Conditions fill:#fef3c7,stroke:#fcd34d`;
+  
+  return diagram;
 }
 
 // ============================================
-// Generate ASCII Art
+// Generate ASCII Art (Dynamic)
 // ============================================
+
 function generateAscii(): string {
+  const structure = parseGraphFromSource();
+  
+  const nodeList = structure.nodes.map(n => n.id).join(', ');
+  const hasObserve = structure.nodes.some(n => n.id === 'observe');
+  
+  if (hasObserve) {
+    // Old ReAct pattern
+    return generateOldReActAscii();
+  }
+  
+  // New Planner + CodeAct pattern
   return `
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                         Agent Core - LangGraph Flow                          ║
-║                              (ReAct Pattern)                                  ║
+║                          (Planner + CodeAct Pattern)                         ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Nodes: ${nodeList}
+  
+                                  ┌─────────┐
+                                  │  START  │
+                                  └────┬────┘
+                                       │
+                                       ▼
+                            ╔═══════════════════╗
+                            ║     PLANNER       ║
+                            ║  ─────────────    ║
+                            ║  • Task planning  ║
+                            ║  • Next step      ║
+                            ║  • Completion     ║
+                            ╚════════╤══════════╝
+                                     │
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+                    ▼                ▼                ▼
+              [isComplete]     [has instruction]  [error]
+                    │                │                │
+                    ▼                │                ▼
+              ┌─────────┐            │          ┌─────────┐
+              │   END   │            │          │   END   │
+              └─────────┘            │          └─────────┘
+                                     ▼
+                          ╔═══════════════════╗
+                          ║     CODEACT       ║
+                          ║  ─────────────    ║
+                          ║  • Code generate  ║
+                          ║  • Execute code   ║
+                          ║  • Return result  ║
+                          ╚════════╤══════════╝
+                                   │
+                                   │
+                                   └──────────────────┐
+                                                      │
+                                                      ▼
+                                            [back to PLANNER]
+                                                      │
+                                                      │
+                           ┌──────────────────────────┘
+                           │
+                           ▼
+                  ╔═══════════════════╗
+                  ║     PLANNER       ║ (next iteration)
+                  ╚═══════════════════╝
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                          Termination Conditions                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  • isComplete = true (goal achieved by planner)                              ║
+║  • status = 'error' (unrecoverable error)                                    ║
+║  • No instruction from planner                                               ║
+║  • maxIterations reached (in executeTask)                                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+`;
+}
+
+function generateOldReActAscii(): string {
+  return `
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                         Agent Core - LangGraph Flow                          ║
+║                              (ReAct Pattern)                                 ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
                                   ┌─────────┐
@@ -134,157 +298,122 @@ function generateAscii(): string {
                                        ▼
                             ╔═══════════════════╗
                             ║     OBSERVE       ║
-                            ║  ─────────────    ║
-                            ║  • Get page info  ║
-                            ║  • Capture state  ║
-                            ║  • Detect changes ║
                             ╚═════════╤═════════╝
                                       │
-                   ┌──────────────────┼──────────────────┐
-                   │                  │                  │
-                   ▼                  ▼                  ▼
-             [isComplete]       [loopDetected]      [continue]
-             [error]            [maxIterations]         │
-                   │                  │                 │
-                   └────────┬─────────┘                 │
-                            │                           ▼
-                            │                ╔═══════════════════╗
-                            │                ║      THINK        ║
-                            │                ║  ─────────────    ║
-                            │                ║  • LLM reasoning  ║
-                            │                ║  • Choose action  ║
-                            │                ║  • Rule fallback  ║
-                            │                ╚═════════╤═════════╝
-                            │                          │
-                            │     ┌────────────────────┼────────────────────┐
-                            │     │                    │                    │
-                            │     ▼                    ▼                    ▼
-                            │ [has action]      [no action]           [complete]
-                            │     │                    │              [error]
-                            │     │                    │                    │
-                            │     ▼                    │                    │
-                            │ ╔═══════════════════╗    │                    │
-                            │ ║       ACT         ║    │                    │
-                            │ ║  ─────────────    ║    │                    │
-                            │ ║  • Execute tool   ║    │                    │
-                            │ ║  • Retry logic    ║    │                    │
-                            │ ║  • Verify result  ║    │                    │
-                            │ ╚═════════╤═════════╝    │                    │
-                            │           │              │                    │
-                            │           │              │                    │
-                            │           └──────────────┘                    │
-                            │                  │                            │
-                            │                  ▼                            │
-                            │          [back to OBSERVE]                    │
-                            │                  │                            │
-                            │                  │                            │
-                            │                  └────────────────────────────┤
-                            │                                               │
-                            ▼                                               ▼
-                       ┌─────────┐                                    ┌─────────┐
-                       │   END   │                                    │   END   │
-                       └─────────┘                                    └─────────┘
-
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                          Termination Conditions                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║  RA-05: isComplete = true (goal achieved)                                    ║
-║  RA-05: iterationCount >= maxIterations (default: 20)                        ║
-║  RA-06: loopDetected = true (repeated actions)                               ║
-║  RA-07: consecutiveFailures >= maxConsecutiveFailures (default: 3)           ║
-║  status = 'error' (unrecoverable error)                                      ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+                                      ▼
+                            ╔═══════════════════╗
+                            ║      THINK        ║
+                            ╚═════════╤═════════╝
+                                      │
+                                      ▼
+                            ╔═══════════════════╗
+                            ║       ACT         ║
+                            ╚═════════╤═════════╝
+                                      │
+                                      └────────────────────────────────────────┐
+                                                                               │
+                                                                               ▼
+                                                                         [back to OBSERVE]
 `;
 }
 
 // ============================================
-// Generate JSON Structure
+// Generate JSON Structure (Dynamic)
 // ============================================
+
 function generateJson(): string {
-  const structure = {
-    name: "BrowserAgent ReAct Graph",
-    nodes: [
-      {
-        id: "observe",
-        name: "Observe Node",
-        description: "Captures current browser state (RA-01)",
-        inputs: ["goal", "previousObservation"],
-        outputs: ["observation", "iterationCount", "loadState"],
-        features: ["SA-01: Page load detection", "SA-04: Loading/modal detection", "SA-06: Content change detection"]
-      },
-      {
-        id: "think", 
-        name: "Think Node",
-        description: "LLM reasoning to decide next action (RA-02)",
-        inputs: ["goal", "observation", "actionHistory"],
-        outputs: ["actionHistory", "isComplete", "loopDetected"],
-        features: ["RA-06: Loop detection", "RA-08: Rule-based fallback", "SA-05: Context preservation"]
-      },
-      {
-        id: "act",
-        name: "Act Node", 
-        description: "Executes browser actions (RA-03)",
-        inputs: ["actionHistory"],
-        outputs: ["actionHistory", "consecutiveFailures", "completedSteps"],
-        features: ["ER-01: Selector fallback", "ER-02: Retry with backoff", "SA-02: Result verification"]
-      }
-    ],
-    edges: [
-      { from: "__start__", to: "observe", label: "initial" },
-      { from: "observe", to: "think", condition: "continue" },
-      { from: "observe", to: "__end__", condition: "error | complete | loop" },
-      { from: "think", to: "act", condition: "has pending action" },
-      { from: "think", to: "observe", condition: "no action needed" },
-      { from: "think", to: "__end__", condition: "error | complete | loop" },
-      { from: "act", to: "observe", condition: "continue" },
-      { from: "act", to: "__end__", condition: "error | complete | loop | maxIterations | maxFailures" }
-    ],
+  const structure = parseGraphFromSource();
+  
+  const result = {
+    name: "BrowserAgent Graph",
+    description: "Dynamically extracted from packages/agent-core/src/graph.ts",
+    architecture: structure.nodes.some(n => n.id === 'planner') 
+      ? "Planner + CodeAct" 
+      : "ReAct (Observe + Think + Act)",
+    nodes: structure.nodes.map(n => ({
+      id: n.id,
+      name: `${n.id.charAt(0).toUpperCase()}${n.id.slice(1)} Node`,
+      description: n.description,
+    })),
+    edges: structure.edges.map(e => ({
+      from: e.from,
+      to: e.to,
+      type: e.type,
+      condition: e.condition || null,
+    })),
     terminationConditions: [
-      "RA-05: isComplete = true",
-      "RA-05: iterationCount >= maxIterations",
-      "RA-06: loopDetected = true",
-      "RA-07: consecutiveFailures >= maxConsecutiveFailures",
-      "status = 'error'"
+      "isComplete = true",
+      "status = 'error'",
+      "maxIterations reached",
     ],
-    defaultConfig: DEFAULT_AGENT_CONFIG
+    sourceFile: "packages/agent-core/src/graph.ts",
+    extractedAt: new Date().toISOString(),
+    defaultConfig: DEFAULT_AGENT_CONFIG,
   };
   
-  return JSON.stringify(structure, null, 2);
+  return JSON.stringify(result, null, 2);
 }
 
 // ============================================
-// Generate PNG using LangGraph's built-in method
+// Generate Raw Graph Structure
 // ============================================
+
+function generateRaw(): string {
+  const structure = parseGraphFromSource();
+  
+  return `
+=== Parsed Graph Structure ===
+
+Source File: packages/agent-core/src/graph.ts
+
+Nodes (${structure.nodes.length}):
+${structure.nodes.map(n => `  - ${n.id}: ${n.description}`).join('\n')}
+
+Edges (${structure.edges.length}):
+${structure.edges.map(e => {
+  const arrow = e.type === 'conditional' ? `--[${e.condition}]-->` : '--->';
+  return `  ${e.from} ${arrow} ${e.to}`;
+}).join('\n')}
+
+=== JSON ===
+${JSON.stringify(structure, null, 2)}
+`;
+}
+
+// ============================================
+// Generate PNG
+// ============================================
+
 async function generatePng(outputPath: string): Promise<void> {
-  try {
-    const graph = createVisualizationGraph();
-    const compiled = graph.compile();
-    
-    // Get the drawable graph
-    const drawable = compiled.getGraph();
-    
-    // Try to draw PNG (requires graphviz)
-    const png = await drawable.drawMermaidPng();
-    fs.writeFileSync(outputPath, Buffer.from(await png.arrayBuffer()));
-    console.log(`PNG saved to: ${outputPath}`);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('graphviz')) {
-      console.error('Error: graphviz is required for PNG generation.');
-      console.error('Install with: brew install graphviz');
-    } else {
-      throw error;
-    }
-  }
+  // PNG generation would require external tools like mermaid-cli
+  // For now, just save the mermaid file and provide instructions
+  const mermaid = generateMermaid();
+  const mermaidPath = outputPath.replace('.png', '.mmd');
+  fs.writeFileSync(mermaidPath, mermaid);
+  
+  console.log(`📝 Mermaid file saved to: ${mermaidPath}`);
+  console.log(`\nTo generate PNG, use one of these methods:`);
+  console.log(`\n1. Online: Paste the Mermaid code at https://mermaid.live and export`);
+  console.log(`\n2. CLI (requires mermaid-cli): npx -p @mermaid-js/mermaid-cli mmdc -i ${mermaidPath} -o ${outputPath}`);
+  console.log(`\n3. VS Code: Install "Markdown Preview Mermaid Support" extension`);
 }
 
 // ============================================
 // Main
 // ============================================
+
 async function main() {
   const format = process.argv[2] || 'mermaid';
   const outputDir = path.join(__dirname, '..', 'docs');
   
-  console.log(`\n🔍 LangGraph Visualization Tool\n`);
+  console.log(`\n🔍 LangGraph Visualization Tool (Dynamic)\n`);
+  
+  // Show parsed structure
+  const structure = parseGraphFromSource();
+  console.log(`📊 Detected graph structure:`);
+  console.log(`   Nodes: ${structure.nodes.map(n => n.id).join(', ')}`);
+  console.log(`   Edges: ${structure.edges.length} total`);
+  console.log('');
   
   switch (format.toLowerCase()) {
     case 'mermaid':
@@ -322,6 +451,11 @@ async function main() {
       console.log(`\n💾 Saved to: ${jsonPath}`);
       break;
       
+    case 'raw':
+      const raw = generateRaw();
+      console.log(raw);
+      break;
+      
     case 'png':
       if (!fs.existsSync(outputDir)) {
         fs.mkdirSync(outputDir, { recursive: true });
@@ -331,9 +465,8 @@ async function main() {
       break;
       
     default:
-      console.log('Unknown format. Available formats: mermaid, ascii, json, png');
+      console.log('Unknown format. Available formats: mermaid, ascii, json, raw, png');
   }
 }
 
 main().catch(console.error);
-

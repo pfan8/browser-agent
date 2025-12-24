@@ -141,17 +141,28 @@ export function createCodeActNode(
           previousAttempt,
         });
 
-        // Log user message at debug level
-        log.debugWithTrace(traceContext!, '[CODEACT] User message', {
-          attempt,
-          userMessage,
-        });
-
         // Call LLM
         const messages = [
           new SystemMessage(systemPrompt),
           new HumanMessage(userMessage),
         ];
+
+        // Log complete LLM prompt for debugging
+        log.infoWithTrace(traceContext!, '[CODEACT] === LLM Request ===', {
+          attempt,
+          model: llmConfig.model,
+          mode,
+          systemPromptLength: systemPrompt.length,
+          userMessageLength: userMessage.length,
+        });
+        log.debugWithTrace(traceContext!, '[CODEACT] System Prompt', {
+          attempt,
+          systemPrompt,
+        });
+        log.debugWithTrace(traceContext!, '[CODEACT] User Message', {
+          attempt,
+          userMessage,
+        });
 
         const llmStartTime = Date.now();
         const response = await llm!.invoke(messages);

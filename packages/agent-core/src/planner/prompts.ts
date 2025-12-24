@@ -8,77 +8,44 @@
 /**
  * System prompt for the Planner
  * 
- * Key principles:
- * 1. Planner does NOT know how to write code
- * 2. Planner only describes actions in natural language
- * 3. Planner monitors progress and decides when task is complete
+ * Simple architecture: Planner ↔ CodeAct loop
+ * - Planner gives instructions in natural language
+ * - CodeAct executes and returns results
+ * - Planner decides next step based on results
  */
-export const PLANNER_SYSTEM_PROMPT = `You are a Task Planning Agent for browser automation.
+export const PLANNER_SYSTEM_PROMPT = `You plan browser automation tasks. Describe actions in natural language - an Executor will run them and return results.
 
-## Your Role
-You analyze user tasks and decide what action to take next.
-You do NOT know how to write code or use any browser API.
-You only describe actions in natural language.
+## Terminology
+"页面" (pages) = browser tabs, NOT website navigation pages.
 
-A separate Executor will translate your instructions into actual browser operations.
+## Available Actions
+Navigate, Click, Type, Press key, Wait, Scroll, Screenshot, Switch tab, List tabs, Get page info
 
-## Terminology Clarification
-IMPORTANT: When the user mentions "页面" (pages), they typically mean:
-- **Browser tabs** - the open tabs in the browser
-- NOT the navigation pages within a website
+## Response (JSON)
+Continue: {"thought": "analysis of last result and reasoning", "nextStep": "action description", "isComplete": false}
+Complete: {"thought": "task completed because...", "isComplete": true, "completionMessage": "summary of what was done"}
+Clarify: {"thought": "need more info because...", "needsMoreInfo": true, "question": "specific question"}
 
-Only interpret as website navigation pages if the user explicitly says:
-- "当前站点的导航页面", "子页面", "网站页面", "菜单页面"
+## Rules
+1. Check last action result before deciding next step
+2. If action failed, try alternative approach
+3. Mark complete when goal is fully achieved
+4. Be specific in action descriptions (include selectors, text, URLs when known)
 
-Examples:
-- "罗列所有页面" → List all open browser tabs
-- "打开了多少个页面" → How many browser tabs are open
-- "切换到另一个页面" → Switch to another browser tab
-- "当前网站有哪些子页面" → Navigation pages within current website
+## Page Analysis (IMPORTANT)
+- ALWAYS use DOM to analyze page content and extract information
+- DO NOT use screenshot/snapshot to analyze pages - use DOM APIs like getPageInfo, querySelector, getText, etc.
+- Screenshot should ONLY be taken when user explicitly requests to save or capture a screenshot
+- For understanding page structure, finding elements, or extracting data, rely on DOM inspection, NOT visual screenshots`;
 
-## What You Can Request
-Describe actions in simple natural language:
-- "Navigate to https://google.com"
-- "Click on the search input box"
-- "Type 'hello world' in the search box"
-- "Press Enter key"
-- "Wait for search results to load"
-- "Scroll down the page"
-- "Take a screenshot"
-- "Switch to tab with Google Search"
-- "List all open tabs"
-
-## Response Format
-Always respond with a valid JSON object:
-
-When task needs more steps:
-{
-  "thought": "Your analysis of the current situation...",
-  "nextStep": "Description of what to do next",
-  "isComplete": false
+/**
+ * Memory context for prompt injection
+ */
+export interface PlannerMemoryContext {
+  contextSummary?: string;
+  relevantFacts?: string[];
+  recentTasks?: string[];
 }
-
-When task is complete:
-{
-  "thought": "Task completed because...",
-  "isComplete": true,
-  "completionMessage": "Summary of what was accomplished"
-}
-
-When you need clarification:
-{
-  "thought": "I need more information...",
-  "needsMoreInfo": true,
-  "question": "What specific element should I click?"
-}
-
-## Important Rules
-1. Always check the last action result before deciding next step
-2. If an action failed, try an alternative approach
-3. Don't repeat the same failed action
-4. Mark task complete when the goal is achieved
-5. Keep instructions clear and specific
-6. For chat messages (greetings, questions about yourself), respond with isComplete=true`;
 
 /**
  * Build user message for the Planner
@@ -93,68 +60,112 @@ export function buildPlannerUserMessage(params: {
   lastActionResult?: {
     step: string;
     success: boolean;
-    message: string;
+    data?: unknown;  // Raw data from execution
+    error?: string;
   };
   history: Array<{
     step: string;
-    result: string;
     success: boolean;
   }>;
   iterationCount: number;
+  memoryContext?: PlannerMemoryContext;
 }): string {
-  const { goal, observation, lastActionResult, history, iterationCount } = params;
+  const { goal, observation, lastActionResult, history, iterationCount, memoryContext } = params;
 
-  let message = `## Current Task
+  let message = `## Task
 ${goal}
 
-## Current Page State
+## Current Page
 - URL: ${observation.url}
 - Title: ${observation.title}
-${observation.summary ? `- Summary: ${observation.summary}` : ''}
-
-## Last Action Result
 `;
 
-  if (lastActionResult) {
-    message += `- Step: ${lastActionResult.step}
-- Success: ${lastActionResult.success ? 'Yes' : 'No'}
-- Result: ${lastActionResult.message}
+  // Add memory context if available (only on first iteration to save tokens)
+  if (memoryContext && iterationCount === 0) {
+    if (memoryContext.contextSummary) {
+      message += `
+## Memory Context
+${memoryContext.contextSummary}
 `;
-  } else {
-    message += `None - this is the first action
-`;
-  }
-
-  message += `
-## Execution History
-`;
-
-  if (history.length === 0) {
-    message += `No previous steps executed yet.
-`;
-  } else {
-    // Show last 5 steps
-    const recentHistory = history.slice(-5);
-    recentHistory.forEach((h, i) => {
-      const icon = h.success ? '✓' : '✗';
-      message += `${history.length - recentHistory.length + i + 1}. [${icon}] ${h.step} → ${h.result}
-`;
-    });
-    if (history.length > 5) {
-      message += `... and ${history.length - 5} earlier steps
+    } else if (memoryContext.relevantFacts && memoryContext.relevantFacts.length > 0) {
+      message += `
+## Relevant Memory
+${memoryContext.relevantFacts.slice(0, 3).map(f => `- ${f}`).join('\n')}
 `;
     }
   }
 
   message += `
-## Progress
-- Steps completed: ${history.filter(h => h.success).length}
-- Iteration: ${iterationCount}
+## Last Result
+`;
 
-Based on the above context, decide what to do next.
-Respond with a valid JSON object.`;
+  if (lastActionResult) {
+    const icon = lastActionResult.success ? '✓' : '✗';
+    message += `[${icon}] ${lastActionResult.step}
+`;
+    
+    // Include actual data or error
+    if (lastActionResult.success && lastActionResult.data !== undefined) {
+      // Compact JSON representation of actual data (truncated if too long)
+      const dataJson = formatDataForPlanner(lastActionResult.data);
+      message += `Data: ${dataJson}
+`;
+    } else if (!lastActionResult.success && lastActionResult.error) {
+      message += `Error: ${lastActionResult.error}
+`;
+    }
+  } else {
+    message += `(First action)
+`;
+  }
+
+  if (history.length > 0) {
+    message += `
+## History (${history.length} steps)
+`;
+    // Show last 3 steps only to reduce tokens
+    const recentHistory = history.slice(-3);
+    recentHistory.forEach((h, i) => {
+      const icon = h.success ? '✓' : '✗';
+      message += `${history.length - recentHistory.length + i + 1}. [${icon}] ${h.step}
+`;
+    });
+  }
+
+  message += `
+Iteration: ${iterationCount}. Respond with JSON.`;
 
   return message;
+}
+
+/**
+ * Format data for Planner context
+ * Returns compact JSON, truncated if too long
+ */
+function formatDataForPlanner(data: unknown, maxLength = 1500): string {
+  if (data === null || data === undefined) {
+    return 'null';
+  }
+  
+  try {
+    // Handle nested { success: true, data: {...} } structure from CodeAct
+    if (typeof data === 'object' && data !== null) {
+      const obj = data as Record<string, unknown>;
+      // If data has nested 'data' field, extract it
+      if ('data' in obj && typeof obj.data === 'object' && obj.data !== null) {
+        data = obj.data;
+      }
+    }
+    
+    const json = JSON.stringify(data);
+    if (json.length <= maxLength) {
+      return json;
+    }
+    // Truncate with indicator
+    return json.slice(0, maxLength - 20) + '... (truncated)';
+  } catch {
+    return String(data).slice(0, maxLength);
+  }
 }
 
 /**

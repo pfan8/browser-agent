@@ -5,20 +5,25 @@ import type { ChatMessage } from '@dsl/types';
 
 interface CheckpointInfo {
   id: string;
-  name: string;
-  description?: string;
-  stepIndex: number;
+  threadId: string;
   createdAt: string;
-  isAutoSave: boolean;
+  step: number;
+  messagePreview?: string;
+  isUserMessage: boolean;
+  parentCheckpointId?: string;
+  // Legacy fields for backward compatibility
+  name?: string;
+  description?: string;
+  stepIndex?: number;
+  isAutoSave?: boolean;
 }
 
 interface ChatPanelProps {
   messages: ChatMessage[];
-  onSendMessage: (message: string) => void;
+  onSendMessage: (message: string, editCheckpointId?: string) => void;
   isProcessing: boolean;
   isConnected: boolean;
   checkpoints?: CheckpointInfo[];
-  onRestoreCheckpoint?: (checkpointId: string) => void;
   isRunning?: boolean;
   onStop?: () => void;
 }
@@ -29,7 +34,6 @@ export default function ChatPanel({
   isProcessing, 
   isConnected,
   checkpoints,
-  onRestoreCheckpoint,
   isRunning,
   onStop,
 }: ChatPanelProps) {
@@ -46,6 +50,11 @@ export default function ChatPanel({
     setInputValue(text);
   }, []);
 
+  // Handle inline edit and resend - called from MessageList
+  const handleEditAndResend = useCallback((checkpointId: string, newContent: string) => {
+    onSendMessage(newContent, checkpointId);
+  }, [onSendMessage]);
+
   // Handle send message and clear input
   const handleSendMessage = useCallback((message: string) => {
     onSendMessage(message);
@@ -58,7 +67,7 @@ export default function ChatPanel({
         messages={messages} 
         isProcessing={isProcessing}
         checkpoints={checkpoints}
-        onRestoreCheckpoint={onRestoreCheckpoint}
+        onEditAndResend={handleEditAndResend}
         onExampleClick={handleExampleClick}
       />
       <div ref={messagesEndRef} />

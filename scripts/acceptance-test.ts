@@ -124,8 +124,6 @@ async function testBC02(adapter: PlaywrightAdapter, rl: readline.Interface): Pro
   
   log(`  Connected: ${status.connected}`);
   log(`  isConnected(): ${isConnected}`);
-  if (status.url) log(`  URL: ${status.url}`);
-  if (status.title) log(`  Title: ${status.title}`);
   
   const passed = status.connected && isConnected;
   recordResult('BC-02', 'Connection Status', passed, passed ? undefined : 'Status not showing connected');

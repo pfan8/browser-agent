@@ -11,7 +11,8 @@ interface SessionInfo {
   id: string;
   name: string;
   description?: string;
-  checkpointCount: number;
+  checkpointCount?: number;
+  messageCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +48,7 @@ interface SessionPanelProps {
   progress: AgentProgress | null;
   status: string;
   isRunning: boolean;
+  traceId: string | null;
   onCreateSession: (name: string, description?: string) => void;
   onLoadSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -60,6 +62,7 @@ export function SessionPanel({
   progress,
   status,
   isRunning,
+  traceId,
   onCreateSession,
   onLoadSession,
   onDeleteSession,
@@ -69,45 +72,19 @@ export function SessionPanel({
   const [newSessionName, setNewSessionName] = useState('');
   const [showNewSession, setShowNewSession] = useState(false);
   const [traceCopied, setTraceCopied] = useState(false);
-  const [traceLoading, setTraceLoading] = useState(false);
 
-  // Copy trace to clipboard
-  const handleCopyTrace = useCallback(async () => {
-    if (!window.electronAPI?.agent?.getTrace) {
-      // Fallback: copy current execution steps from the UI
-      const traceInfo = {
-        timestamp: new Date().toISOString(),
-        status,
-        isRunning,
-        currentPlan: currentPlan ? {
-          goal: currentPlan.goal,
-          steps: currentPlan.steps.map((s, i) => ({
-            index: i + 1,
-            description: s.description,
-            tool: s.tool,
-            status: s.status,
-          })),
-        } : null,
-        progress,
-      };
-      await navigator.clipboard.writeText(JSON.stringify(traceInfo, null, 2));
-      setTraceCopied(true);
-      setTimeout(() => setTraceCopied(false), 2000);
-      return;
-    }
+  // Copy trace ID to clipboard
+  const handleCopyTraceId = useCallback(async () => {
+    if (!traceId) return;
     
-    setTraceLoading(true);
     try {
-      const trace = await window.electronAPI.agent.getTrace();
-      await navigator.clipboard.writeText(trace);
+      await navigator.clipboard.writeText(traceId);
       setTraceCopied(true);
       setTimeout(() => setTraceCopied(false), 2000);
     } catch (error) {
-      console.error('Failed to copy trace:', error);
-    } finally {
-      setTraceLoading(false);
+      console.error('Failed to copy trace ID:', error);
     }
-  }, [status, isRunning, currentPlan, progress]);
+  }, [traceId]);
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -149,12 +126,12 @@ export function SessionPanel({
         </div>
         <div className="status-actions">
           <button 
-            className={`trace-btn ${traceCopied ? 'copied' : ''}`}
-            onClick={handleCopyTrace}
-            disabled={traceLoading}
-            title="复制当前 Trace 日志"
+            className={`trace-btn ${traceCopied ? 'copied' : ''} ${!traceId ? 'disabled' : ''}`}
+            onClick={handleCopyTraceId}
+            disabled={!traceId}
+            title={traceId || '暂无 Trace ID'}
           >
-            {traceLoading ? '⏳' : traceCopied ? '✓ 已复制' : '📋 Trace'}
+            {traceCopied ? '✓ 已复制' : '📋 Trace'}
           </button>
           {isRunning && (
             <button className="stop-btn" onClick={onStopTask}>
@@ -287,7 +264,12 @@ export function SessionPanel({
                   <div className="item-main" onClick={() => onLoadSession(session.id)}>
                     <span className="item-name">{session.name}</span>
                     <span className="item-meta">
-                      {session.checkpointCount} checkpoints • {formatDate(session.updatedAt)}
+                      {session.messageCount !== undefined 
+                        ? `${session.messageCount} 条消息` 
+                        : session.checkpointCount !== undefined 
+                          ? `${session.checkpointCount} checkpoints`
+                          : ''
+                      } • {formatDate(session.updatedAt)}
                     </span>
                   </div>
                   <button 
@@ -368,6 +350,7 @@ export function SessionPanel({
         }
 
         .trace-btn {
+          position: relative;
           padding: 4px 10px;
           background: var(--bg-tertiary, #0f0f1a);
           border: 1px solid var(--border-color, #2a2a4a);
@@ -385,14 +368,48 @@ export function SessionPanel({
         }
 
         .trace-btn:disabled {
-          opacity: 0.6;
+          opacity: 0.5;
           cursor: not-allowed;
+        }
+
+        .trace-btn.disabled {
+          opacity: 0.5;
         }
 
         .trace-btn.copied {
           background: rgba(34, 197, 94, 0.2);
           border-color: #22c55e;
           color: #22c55e;
+        }
+
+        /* Enhanced tooltip for trace ID */
+        .trace-btn[title]:hover::after {
+          content: attr(title);
+          position: absolute;
+          bottom: calc(100% + 8px);
+          left: 50%;
+          transform: translateX(-50%);
+          padding: 6px 10px;
+          background: var(--bg-primary, #0a0a0f);
+          border: 1px solid var(--border-color, #2a2a4a);
+          border-radius: 4px;
+          font-family: monospace;
+          font-size: 10px;
+          color: #8b5cf6;
+          white-space: nowrap;
+          z-index: 1000;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .trace-btn[title]:hover::before {
+          content: '';
+          position: absolute;
+          bottom: calc(100% + 4px);
+          left: 50%;
+          transform: translateX(-50%);
+          border: 4px solid transparent;
+          border-top-color: var(--border-color, #2a2a4a);
+          z-index: 1001;
         }
 
         .stop-btn {

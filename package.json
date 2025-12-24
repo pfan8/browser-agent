@@ -4,8 +4,11 @@
   "description": "Interactive chat agent for browser automation with operation recording",
   "main": "dist-electron/main.js",
   "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3 || true",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "build:packages": "pnpm -r --filter './packages/**' build",
     "dev": "pnpm build:packages && vite",
+    "dev:debug": "pnpm build:packages && DEBUG=vite:* vite",
     "build": "pnpm build:packages && tsc && vite build && electron-builder",
     "preview": "vite preview",
     "preview:electron": "open 'release/mac-arm64/Chat Browser Agent.app'",
@@ -38,6 +41,7 @@
     "uuid": "^11.0.3"
   },
   "devDependencies": {
+    "@electron/rebuild": "4.0.2",
     "@playwright/test": "1.56.1",
     "@types/lodash": "^4.17.13",
     "@types/node": "^22.10.2",
@@ -46,7 +50,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
-    "electron": "39.2.6",
+    "electron": "30.5.1",
     "electron-builder": "^25.1.8",
     "tsx": "4.21.0",
     "typescript": "^5.7.2",
@@ -77,9 +81,12 @@
     }
   },
   "pnpm": {
-    "ignoredBuiltDependencies": [
-      "electron",
-      "esbuild"
+    "overrides": {
+      "better-sqlite3": "11.10.0"
+    },
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "electron"
     ]
   }
 }

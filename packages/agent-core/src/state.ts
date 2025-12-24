@@ -11,6 +11,20 @@ import { BaseMessage } from "@langchain/core/messages";
 import { type TraceContext } from './tracing';
 
 /**
+ * Memory context injected from long-term memory
+ */
+export interface MemoryContext {
+  /** User preferences summary */
+  userPreferences?: string;
+  /** Relevant facts for the current task */
+  relevantFacts?: string[];
+  /** Recent task summaries */
+  recentTasks?: string[];
+  /** Full context summary for prompt injection */
+  contextSummary?: string;
+}
+
+/**
  * Agent status enum (RA-05: loop termination states)
  */
 export type AgentStatus = 
@@ -41,6 +55,16 @@ export type PageLoadState =
   | 'error';
 
 /**
+ * Tab information for multi-tab operations
+ */
+export interface TabInfo {
+  index: number;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+/**
  * Observation from the browser (RA-01, SA-*)
  */
 export interface Observation {
@@ -58,6 +82,9 @@ export interface Observation {
   // SA-06: Page change detection
   contentHash?: string;
   previousUrl?: string;
+  // Tab list cache - captured during observe to avoid repeated API calls
+  tabs?: TabInfo[];
+  tabCount?: number;
   // Last action result for context continuity
   lastActionResult?: {
     tool: string;
@@ -333,6 +360,18 @@ export const AgentStateAnnotation = Annotation.Root({
   executionMode: Annotation<ExecutionMode>({
     reducer: (_, newValue) => newValue,
     default: () => 'iterative',
+  }),
+
+  // Long-term memory context
+  memoryContext: Annotation<MemoryContext | null>({
+    reducer: (_, newValue) => newValue,
+    default: () => null,
+  }),
+
+  // Session/thread ID for session continuity
+  threadId: Annotation<string | null>({
+    reducer: (_, newValue) => newValue,
+    default: () => null,
   }),
 });
 
