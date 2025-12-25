@@ -71,6 +71,21 @@ export {
   type LearnedPathMemory,
 } from './memory';
 
+// Context management module
+export {
+  ContextManager,
+  LLMSummarizer,
+  RuleBasedSummarizer,
+  createSummarizer,
+  DEFAULT_CONTEXT_CONFIG,
+  type ContextConfig,
+  type LayeredContext,
+  type BuildContextInput,
+  type BuildContextResult,
+  type ISummarizer,
+  type SummarizerConfig,
+} from './context';
+
 // Configuration
 export { 
   loadLLMConfig, 

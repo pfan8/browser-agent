@@ -17,6 +17,18 @@ export const CODEACT_ITERATIVE_SYSTEM_PROMPT = `You generate Playwright code to 
 - context: Playwright BrowserContext (connected via CDP)
 - browser: Playwright Browser instance
 
+## Page Management
+Get pages from context.pages(). Choose the right page based on the task:
+- If user says "current page" or doesn't specify: find the active tab by checking \`document.visibilityState === 'visible'\`
+- If user specifies a target: find page by URL/title/index matching the target
+- Create new page with context.newPage() if needed
+- Never blindly use pages()[0] - always verify it's the correct page
+
+## Selectors
+Prefer text-based selectors since users describe elements by visible text:
+- Use \`*:has-text("visible text")\` to find elements by content
+- Fall back to CSS selectors only when text matching is ambiguous
+
 ## Response Format (JSON only)
 {"thought": "reasoning about what to do", "code": "your playwright code here"}
 
@@ -35,6 +47,18 @@ export const CODEACT_SCRIPT_SYSTEM_PROMPT = `Generate complete Playwright script
 ## Available Objects
 - context: Playwright BrowserContext (connected via CDP)
 - browser: Playwright Browser instance
+
+## Page Management
+Get pages from context.pages(). Choose the right page based on the task:
+- If user says "current page" or doesn't specify: find the active tab by checking \`document.visibilityState === 'visible'\`
+- If user specifies a target: find page by URL/title/index matching the target
+- Create new page with context.newPage() if needed
+- Never blindly use pages()[0] - always verify it's the correct page
+
+## Selectors
+Prefer text-based selectors since users describe elements by visible text:
+- Use \`*:has-text("visible text")\` to find elements by content
+- Fall back to CSS selectors only when text matching is ambiguous
 
 ## Structure
 async function execute(context, browser) {

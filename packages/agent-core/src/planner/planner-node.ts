@@ -13,6 +13,7 @@ import { createAgentLogger, startTimer } from '../tracing';
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage, CHAT_RESPONSES } from './prompts';
 import type { PlannerDecision } from './types';
 import { formatFullDataAsMarkdown } from './summarize';
+import { ContextManager, type ContextConfig } from '../context';
 
 const log = createAgentLogger('PlannerNode');
 
@@ -84,54 +85,8 @@ export interface PlannerNodeConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
-}
-
-/**
- * Check if goal is a chat message (greeting, etc.)
- */
-function isChatMessage(goal: string): boolean {
-  const patterns = [
-    /^(你好|您好|hi|hello|hey|嗨|哈喽|早上好|下午好|晚上好|good\s*(morning|afternoon|evening))[\s!！。.?？]*$/i,
-    /^(你是谁|who are you|what are you|你能做什么|what can you do|help|帮助)[\s!！。.?？]*$/i,
-    /^(谢谢|thanks|thank you|thx|感谢)[\s!！。.?？]*$/i,
-    /^(再见|拜拜|bye|goodbye|see you)[\s!！。.?？]*$/i,
-    /^.{1,5}$/,
-  ];
-  return patterns.some(p => p.test(goal.trim()));
-}
-
-/**
- * Get chat response for greeting/chat messages
- */
-function getChatResponse(goal: string): string {
-  const normalized = goal.trim().toLowerCase();
-  
-  if (/^(你好|您好|hi|hello|hey|嗨|哈喽)/i.test(normalized)) {
-    return CHAT_RESPONSES.greeting;
-  }
-  if (/^(早上好|good\s*morning)/i.test(normalized)) {
-    return CHAT_RESPONSES.morning;
-  }
-  if (/^(下午好|good\s*afternoon)/i.test(normalized)) {
-    return CHAT_RESPONSES.afternoon;
-  }
-  if (/^(晚上好|good\s*evening)/i.test(normalized)) {
-    return CHAT_RESPONSES.evening;
-  }
-  if (/^(你是谁|who are you|what are you)/i.test(normalized)) {
-    return CHAT_RESPONSES.whoAreYou;
-  }
-  if (/^(你能做什么|what can you do|help|帮助)/i.test(normalized)) {
-    return CHAT_RESPONSES.help;
-  }
-  if (/^(谢谢|thanks|thank you)/i.test(normalized)) {
-    return CHAT_RESPONSES.thanks;
-  }
-  if (/^(再见|拜拜|bye|goodbye)/i.test(normalized)) {
-    return CHAT_RESPONSES.goodbye;
-  }
-  
-  return `收到消息: "${goal}"。如果你想执行浏览器操作，请告诉我具体的任务。`;
+  /** Context management configuration */
+  contextConfig?: Partial<ContextConfig>;
 }
 
 /**
@@ -169,6 +124,26 @@ function parsePlannerResponse(response: string): PlannerDecision | null {
 }
 
 /**
+ * Summarize execution output for Planner context
+ * Truncates long outputs to keep token usage manageable
+ */
+function summarizeOutput(data: unknown, maxLength = 800): string | undefined {
+  if (data === null || data === undefined) {
+    return undefined;
+  }
+  
+  try {
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    if (str.length <= maxLength) {
+      return str;
+    }
+    return str.slice(0, maxLength) + '... (truncated)';
+  } catch {
+    return '[Unable to serialize output]';
+  }
+}
+
+/**
  * Create the Planner Node
  */
 export function createPlannerNode(config: PlannerNodeConfig) {
@@ -182,6 +157,14 @@ export function createPlannerNode(config: PlannerNodeConfig) {
 
   const hasLlm = !!llmConfig.apiKey;
   let llm: ChatAnthropic | null = null;
+
+  // Initialize Context Manager with optional LLM summarization
+  const contextManager = new ContextManager({
+    ...config.contextConfig,
+    summaryApiKey: config.apiKey,
+    summaryBaseUrl: config.baseUrl,
+    summaryModel: config.contextConfig?.summaryModel || 'claude-3-haiku-20240307',
+  });
 
   if (hasLlm) {
     log.info('Initializing Planner LLM', { model: llmConfig.model });
@@ -214,17 +197,6 @@ export function createPlannerNode(config: PlannerNodeConfig) {
     });
 
     try {
-      // Handle chat messages without LLM
-      if (isChatMessage(state.goal)) {
-        const response = getChatResponse(state.goal);
-        timer.end('Chat response');
-        return {
-          status: 'complete',
-          isComplete: true,
-          result: response,
-        };
-      }
-
       if (!hasLlm) {
         return {
           status: 'error',
@@ -234,91 +206,81 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         };
       }
 
-      // Build history from action history (simplified - no result detail needed)
-      const history = state.actionHistory.map(a => ({
-        step: a.thought || a.tool,
-        success: a.result?.success ?? false,
-      }));
-
-      // Get last action result with raw data (no summarization - let LLM interpret)
+      // Get last action result (include execution output summary)
       const lastAction = state.actionHistory[state.actionHistory.length - 1];
-      
-      // Debug: log raw action result data
-      if (lastAction?.result?.data) {
-        log.debugWithTrace(traceContext!, '[PLANNER] Raw action result data', {
-          rawDataPreview: JSON.stringify(lastAction.result.data).slice(0, 800),
-        });
-      }
-      
       const lastActionResult = lastAction?.result ? {
-        step: lastAction.thought || lastAction.tool,
+        step: lastAction.reasoning || lastAction.thought || lastAction.tool,
         success: lastAction.result.success,
-        data: lastAction.result.data,  // Pass raw data, let prompts.ts format it
         error: lastAction.result.error,
+        outputSummary: summarizeOutput(lastAction.result.data),
       } : undefined;
 
-      // Build user message with memory context
-      const userMessage = buildPlannerUserMessage({
-        goal: state.goal,
-        observation: {
-          url: state.observation?.url || 'unknown',
-          title: state.observation?.title || 'unknown',
-          summary: state.observation?.content?.slice(0, 500),
+      // Build layered context using ContextManager
+      const coercedHistory = state.messages.map(coerceToBaseMessage);
+      const contextResult = await contextManager.buildContext(
+        {
+          goal: state.goal,
+          lastActionResult,
+          conversationSummary: state.conversationSummary || undefined,
+          messages: coercedHistory,
+          memoryContext: state.memoryContext ? {
+            contextSummary: state.memoryContext.contextSummary,
+            relevantFacts: state.memoryContext.relevantFacts,
+            recentTasks: state.memoryContext.recentTasks,
+          } : undefined,
         },
-        lastActionResult,
-        history,
-        iterationCount: state.iterationCount,
-        memoryContext: state.memoryContext ? {
-          contextSummary: state.memoryContext.contextSummary,
-          relevantFacts: state.memoryContext.relevantFacts,
-          recentTasks: state.memoryContext.recentTasks,
-        } : undefined,
-      });
+        PLANNER_SYSTEM_PROMPT
+      );
 
-      // Log detailed planner context for tracing
-      log.infoWithTrace(traceContext!, '[PLANNER] Input context', {
+      const { context, newSummary, summarizedMessageCount } = contextResult;
+
+      // Log context building result
+      log.infoWithTrace(traceContext!, '[PLANNER] Context built', {
         goal: state.goal,
         iteration: state.iterationCount,
-        observationUrl: state.observation?.url || 'unknown',
-        observationTitle: state.observation?.title || 'unknown',
-        historyCount: history.length,
-        lastActionSuccess: lastActionResult?.success,
-        lastActionStep: lastActionResult?.step,
-        messageLength: userMessage.length,
+        l1Length: context.contextSummary.length,
+        l2Length: context.currentTaskMessage.length,
+        l3MessageCount: context.recentMessages.length,
+        hasSummarization: !!newSummary,
+        summarizedCount: summarizedMessageCount,
       });
-      
-      // Call LLM
-      // Coerce state.messages to proper BaseMessage instances (handles checkpoint deserialization)
-      const coercedHistory = state.messages.map(coerceToBaseMessage);
-      const messages = [
-        new SystemMessage(PLANNER_SYSTEM_PROMPT),
-        ...coercedHistory,
-        new HumanMessage(userMessage),
+
+      // Build messages array with layered context
+      // Combine L0 (system rules) and L1 (context summary) into a single SystemMessage
+      // (Anthropic API only allows one system message at the beginning)
+      let systemContent = context.systemRules;
+      if (context.contextSummary.trim()) {
+        systemContent += '\n\n---\n\n' + context.contextSummary;
+      }
+
+      const messages: BaseMessage[] = [
+        new SystemMessage(systemContent),  // L0 + L1 combined
       ];
 
-      // Log complete LLM prompt for debugging
+      // Add L3: Recent conversation history (sliding window)
+      messages.push(...context.recentMessages);
+
+      // Add L2: Current task message
+      messages.push(new HumanMessage(context.currentTaskMessage));
+
+      // Debug: Print complete messages for troubleshooting
+      log.debugWithTrace(traceContext!, '[PLANNER] Complete LLM Messages', {
+        messageCount: messages.length,
+        messages: messages.map((m, i) => ({
+          index: i,
+          role: m._getType(),
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        })),
+      });
+
+      // Log LLM request summary
       log.infoWithTrace(traceContext!, '[PLANNER] === LLM Request ===', {
         model: llmConfig.model,
         messageCount: messages.length,
-        systemPromptLength: PLANNER_SYSTEM_PROMPT.length,
-        userMessageLength: userMessage.length,
-      });
-      log.debugWithTrace(traceContext!, '[PLANNER] System Prompt', {
-        systemPrompt: PLANNER_SYSTEM_PROMPT,
-      });
-      if (state.messages.length > 0) {
-        log.debugWithTrace(traceContext!, '[PLANNER] Conversation History', {
-          historyMessages: state.messages.map((m, i) => ({
-            index: i,
-            type: m._getType(),
-            content: typeof m.content === 'string' 
-              ? m.content.slice(0, 500) + (m.content.length > 500 ? '...' : '')
-              : JSON.stringify(m.content).slice(0, 500),
-          })),
-        });
-      }
-      log.debugWithTrace(traceContext!, '[PLANNER] User Message', {
-        userMessage,
+        l0Length: context.systemRules.length,
+        l1Length: context.contextSummary.length,
+        l2Length: context.currentTaskMessage.length,
+        l3Count: context.recentMessages.length,
       });
 
       const llmStartTime = Date.now();
@@ -358,11 +320,18 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         thought: decision.thought?.slice(0, 100),
       });
 
+      // Build base state update with summary if generated
+      const baseStateUpdate: Partial<AgentState> = {};
+      if (newSummary) {
+        baseStateUpdate.conversationSummary = newSummary;
+        baseStateUpdate.summaryMessageCount = (state.summaryMessageCount || 0) + (summarizedMessageCount || 0);
+      }
+
       // Handle completion
       if (decision.isComplete) {
         // Get last action's full data for complete result
-        const lastAction = state.actionHistory[state.actionHistory.length - 1];
-        const fullData = lastAction?.result?.data;
+        const completionLastAction = state.actionHistory[state.actionHistory.length - 1];
+        const fullData = completionLastAction?.result?.data;
         const fullDataMarkdown = formatFullDataAsMarkdown(fullData);
         
         // Combine completion message with full data if available
@@ -376,13 +345,12 @@ export function createPlannerNode(config: PlannerNodeConfig) {
           hasFullData: !!fullDataMarkdown,
         });
         timer.end('Task complete');
-        // Coerce messages to ensure they're proper BaseMessage instances
-        const coercedMessages = state.messages.map(coerceToBaseMessage);
         return {
+          ...baseStateUpdate,
           status: 'complete',
           isComplete: true,
           result: finalResult,
-          messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
+          messages: [...coercedHistory, new HumanMessage(context.currentTaskMessage), new AIMessage(responseText)],
         };
       }
 
@@ -392,13 +360,12 @@ export function createPlannerNode(config: PlannerNodeConfig) {
           question: decision.question,
         });
         timer.end('Needs clarification');
-        // Coerce messages to ensure they're proper BaseMessage instances
-        const coercedMessages = state.messages.map(coerceToBaseMessage);
         return {
+          ...baseStateUpdate,
           status: 'complete',
           isComplete: true,
           result: `❓ ${decision.question || '请提供更多信息'}`,
-          messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
+          messages: [...coercedHistory, new HumanMessage(context.currentTaskMessage), new AIMessage(responseText)],
         };
       }
 
@@ -408,14 +375,14 @@ export function createPlannerNode(config: PlannerNodeConfig) {
         thought: decision.thought?.slice(0, 150),
       });
       timer.end('Next step decided');
-      // Coerce messages to ensure they're proper BaseMessage instances
-      const coercedMessages = state.messages.map(coerceToBaseMessage);
+      // Note: Don't add messages here - intermediate steps don't need to be in conversation history
+      // Messages are only added on completion (isComplete) or when asking for clarification (needsMoreInfo)
       return {
+        ...baseStateUpdate,
         status: 'planning',
         // Store the next step instruction for CodeAct
         currentInstruction: decision.nextStep,
         plannerThought: decision.thought,
-        messages: [...coercedMessages, new HumanMessage(userMessage), new AIMessage(responseText)],
       };
 
     } catch (error) {

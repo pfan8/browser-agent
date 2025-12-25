@@ -155,13 +155,16 @@ export function createCodeActNode(
           systemPromptLength: systemPrompt.length,
           userMessageLength: userMessage.length,
         });
-        log.debugWithTrace(traceContext!, '[CODEACT] System Prompt', {
+
+        // Debug: Print complete messages for troubleshooting
+        log.debugWithTrace(traceContext!, '[CODEACT] Complete LLM Messages', {
           attempt,
-          systemPrompt,
-        });
-        log.debugWithTrace(traceContext!, '[CODEACT] User Message', {
-          attempt,
-          userMessage,
+          messageCount: messages.length,
+          messages: messages.map((m, i) => ({
+            index: i,
+            role: m._getType(),
+            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          })),
         });
 
         const llmStartTime = Date.now();
@@ -216,6 +219,21 @@ export function createCodeActNode(
 
         lastExecResult = execResult;
 
+        // Format output data for logging (truncate if too long)
+        let outputPreview: string | undefined;
+        if (execResult.output !== undefined) {
+          try {
+            const outputStr = typeof execResult.output === 'string' 
+              ? execResult.output 
+              : JSON.stringify(execResult.output);
+            outputPreview = outputStr.length > 1000 
+              ? outputStr.slice(0, 1000) + '... (truncated)'
+              : outputStr;
+          } catch {
+            outputPreview = '[Unable to serialize output]';
+          }
+        }
+
         log.infoWithTrace(traceContext!, '[CODEACT] Execution result', {
           attempt,
           success: execResult.success,
@@ -224,6 +242,7 @@ export function createCodeActNode(
           stackTrace: execResult.stackTrace?.slice(0, 200),
           errorType: execResult.errorType,
           errorLine: execResult.errorLine,
+          outputPreview,
         });
 
         // Success! Return the result

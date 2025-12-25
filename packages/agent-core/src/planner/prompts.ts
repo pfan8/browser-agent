@@ -48,9 +48,47 @@ export interface PlannerMemoryContext {
 }
 
 /**
- * Build user message for the Planner
+ * Build user message for the Planner (Simplified)
+ * 
+ * Only includes essential information:
+ * - Task (goal)
+ * - Last action result (success/error)
+ * 
+ * Other context (memory, history, page info) is handled by ContextManager
+ * and placed in separate system messages (L1) or conversation history (L3).
  */
 export function buildPlannerUserMessage(params: {
+  goal: string;
+  lastActionResult?: {
+    step: string;
+    success: boolean;
+    error?: string;
+  };
+}): string {
+  const { goal, lastActionResult } = params;
+
+  let message = `## Task\n${goal}`;
+
+  if (lastActionResult) {
+    const icon = lastActionResult.success ? '✓' : '✗';
+    message += `\n\n## Last Action\n${icon} ${lastActionResult.step}`;
+    
+    if (!lastActionResult.success && lastActionResult.error) {
+      message += `\nError: ${lastActionResult.error}`;
+    }
+  }
+
+  message += '\n\nRespond with JSON.';
+
+  return message;
+}
+
+/**
+ * Build user message for the Planner (Legacy - with full context)
+ * 
+ * @deprecated Use buildPlannerUserMessage with ContextManager instead
+ */
+export function buildPlannerUserMessageLegacy(params: {
   goal: string;
   observation: {
     url: string;
@@ -60,7 +98,7 @@ export function buildPlannerUserMessage(params: {
   lastActionResult?: {
     step: string;
     success: boolean;
-    data?: unknown;  // Raw data from execution
+    data?: unknown;
     error?: string;
   };
   history: Array<{
@@ -80,7 +118,6 @@ ${goal}
 - Title: ${observation.title}
 `;
 
-  // Add memory context if available (only on first iteration to save tokens)
   if (memoryContext && iterationCount === 0) {
     if (memoryContext.contextSummary) {
       message += `
@@ -104,9 +141,7 @@ ${memoryContext.relevantFacts.slice(0, 3).map(f => `- ${f}`).join('\n')}
     message += `[${icon}] ${lastActionResult.step}
 `;
     
-    // Include actual data or error
     if (lastActionResult.success && lastActionResult.data !== undefined) {
-      // Compact JSON representation of actual data (truncated if too long)
       const dataJson = formatDataForPlanner(lastActionResult.data);
       message += `Data: ${dataJson}
 `;
@@ -123,7 +158,6 @@ ${memoryContext.relevantFacts.slice(0, 3).map(f => `- ${f}`).join('\n')}
     message += `
 ## History (${history.length} steps)
 `;
-    // Show last 3 steps only to reduce tokens
     const recentHistory = history.slice(-3);
     recentHistory.forEach((h, i) => {
       const icon = h.success ? '✓' : '✗';

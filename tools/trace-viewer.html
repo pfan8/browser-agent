@@ -543,6 +543,79 @@
       color: var(--accent-green);
     }
 
+    /* Toggle All Button */
+    .toggle-all-btn {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+      margin-left: auto;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .toggle-all-btn:hover {
+      border-color: var(--accent-purple);
+      color: var(--accent-purple);
+    }
+
+    .section-title-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .section-title-row .section-title {
+      margin-bottom: 0;
+    }
+
+    /* Code Beautify Button */
+    .beautify-btn {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+      transition: all 0.2s;
+      margin-left: 8px;
+    }
+
+    .beautify-btn:hover {
+      border-color: var(--accent-orange);
+      color: var(--accent-orange);
+    }
+
+    .beautify-btn.active {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      background: rgba(158, 206, 106, 0.1);
+    }
+
+    .code-beautified {
+      white-space: pre-wrap !important;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      line-height: 1.5;
+    }
+
+    .event-data-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .event-data-header .event-data-label {
+      margin-bottom: 0;
+    }
+
     /* JSON Syntax Highlighting */
     .json-key { color: var(--accent-cyan); }
     .json-string { color: var(--accent-green); }
@@ -694,6 +767,7 @@
     let selectedTraceId = null;
     let currentFile = null;
     let lastRefreshTime = null;
+    let eventDataStore = {}; // Store raw event data for beautify feature
 
     // ============================================
     // Log Parser
@@ -876,6 +950,9 @@
     function renderTraceDetail(trace) {
       const container = document.getElementById('detailPanel');
       
+      // Reset event data store for new trace
+      eventDataStore = {};
+      
       if (!trace) {
         container.innerHTML = `
           <div class="empty-state">
@@ -931,7 +1008,13 @@
         </div>
         
         <div class="events-section">
-          <div class="section-title">Events (${trace.events.length})</div>
+          <div class="section-title-row">
+            <div class="section-title">Events (${trace.events.length})</div>
+            <button class="toggle-all-btn" onclick="toggleAllEvents()">
+              <span id="toggleAllIcon">▼</span>
+              <span id="toggleAllText">Expand All</span>
+            </button>
+          </div>
           ${trace.events.map((event, idx) => renderEventItem(event, idx)).join('')}
         </div>
       `;
@@ -1030,6 +1113,12 @@
     function renderEventItem(event, idx) {
       const hasData = event.data && Object.keys(event.data).length > 0;
       const isLLMContext = event.message.includes('LLM Context');
+      const hasCodeField = hasData && event.data.code !== undefined;
+      
+      // Store raw data for beautify feature
+      if (hasData) {
+        eventDataStore[idx] = event.data;
+      }
       
       let duration = '';
       if (event.data?.duration) {
@@ -1050,8 +1139,11 @@
             <div class="event-content">
               ${isLLMContext ? renderLLMContext(event) : ''}
               ${hasData ? `
-                <div class="event-data-label">Data</div>
-                <div class="event-data">${syntaxHighlight(JSON.stringify(event.data, null, 2))}</div>
+                <div class="event-data-header">
+                  <div class="event-data-label">Data</div>
+                  ${hasCodeField ? `<button class="beautify-btn" onclick="toggleBeautifyCode(${idx}, this)">✨ Beautify Code</button>` : ''}
+                </div>
+                <div class="event-data" id="event-data-${idx}">${syntaxHighlight(JSON.stringify(event.data, null, 2))}</div>
               ` : ''}
             </div>
           ` : ''}
@@ -1148,6 +1240,7 @@
     // ============================================
     function selectTrace(traceId) {
       selectedTraceId = traceId;
+      allEventsExpanded = false; // Reset expand state when selecting new trace
       const trace = allTraces.find(t => t.traceId === traceId);
       renderTraceList(allTraces, document.getElementById('filterInput').value);
       renderTraceDetail(trace);
@@ -1156,6 +1249,85 @@
     function toggleEvent(idx) {
       const el = document.getElementById(`event-${idx}`);
       el.classList.toggle('expanded');
+      updateToggleAllButtonState();
+    }
+
+    let allEventsExpanded = false;
+
+    function toggleAllEvents() {
+      const eventItems = document.querySelectorAll('.event-item');
+      allEventsExpanded = !allEventsExpanded;
+      
+      eventItems.forEach(item => {
+        if (allEventsExpanded) {
+          item.classList.add('expanded');
+        } else {
+          item.classList.remove('expanded');
+        }
+      });
+      
+      updateToggleAllButton();
+    }
+
+    function updateToggleAllButton() {
+      const iconEl = document.getElementById('toggleAllIcon');
+      const textEl = document.getElementById('toggleAllText');
+      
+      if (iconEl && textEl) {
+        if (allEventsExpanded) {
+          iconEl.textContent = '▲';
+          textEl.textContent = 'Collapse All';
+        } else {
+          iconEl.textContent = '▼';
+          textEl.textContent = 'Expand All';
+        }
+      }
+    }
+
+    function updateToggleAllButtonState() {
+      const eventItems = document.querySelectorAll('.event-item');
+      const expandedItems = document.querySelectorAll('.event-item.expanded');
+      
+      // Update state based on current expansion
+      allEventsExpanded = eventItems.length > 0 && expandedItems.length === eventItems.length;
+      updateToggleAllButton();
+    }
+
+    function toggleBeautifyCode(idx, btn) {
+      const dataEl = document.getElementById(`event-data-${idx}`);
+      if (!dataEl) return;
+      
+      const isBeautified = btn.classList.contains('active');
+      const rawData = eventDataStore[idx];
+      
+      if (!rawData) {
+        console.error('No data found for event', idx);
+        return;
+      }
+      
+      if (isBeautified) {
+        // Restore original view
+        btn.classList.remove('active');
+        btn.textContent = '✨ Beautify Code';
+        dataEl.classList.remove('code-beautified');
+        dataEl.innerHTML = syntaxHighlight(JSON.stringify(rawData, null, 2));
+      } else {
+        // Beautify the code field
+        btn.classList.add('active');
+        btn.textContent = '📝 Raw View';
+        dataEl.classList.add('code-beautified');
+        
+        // Create a beautified version with properly formatted code
+        const beautifiedData = JSON.parse(JSON.stringify(rawData)); // Deep copy
+        if (beautifiedData.code) {
+          // Replace literal \n with actual newlines for display
+          beautifiedData.code = beautifiedData.code
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '  ');
+        }
+        
+        dataEl.innerHTML = syntaxHighlight(JSON.stringify(beautifiedData, null, 2));
+      }
     }
 
     function copyToClipboard(elementId, btn) {

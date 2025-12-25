@@ -373,6 +373,18 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_, newValue) => newValue,
     default: () => null,
   }),
+
+  // Context management: compressed conversation summary
+  conversationSummary: Annotation<string | null>({
+    reducer: (_, newValue) => newValue,
+    default: () => null,
+  }),
+
+  // Context management: count of messages included in summary
+  summaryMessageCount: Annotation<number>({
+    reducer: (_, newValue) => newValue,
+    default: () => 0,
+  }),
 });
 
 /**
