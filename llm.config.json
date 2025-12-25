@@ -3,5 +3,22 @@
   "model": "claude-sonnet-4-5-20250929",
   "temperature": 0.1,
   "timeout": 60000,
-  "maxRetries": 3
+  "maxRetries": 3,
+
+  "planner": {
+    "maxIterations": 20,
+    "maxTokensPerRequest": 8000,
+    "maxConsecutiveFailures": 3
+  },
+
+  "codeact": {
+    "maxReactIterations": 5,
+    "codeExecutionTimeout": 30000,
+    "maxTokensPerRequest": 4000,
+    "sandbox": {
+      "allowFileSystem": false,
+      "allowNetwork": false,
+      "allowedModules": ["playwright"]
+    }
+  }
 }

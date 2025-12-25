@@ -1,6 +1,6 @@
 /**
  * LLM Configuration Loader
- * 
+ *
  * Loads LLM configuration from local file with support for:
  * - Optional fields with sensible defaults
  * - Environment variable overrides
@@ -17,198 +17,387 @@ import _ from 'lodash';
 export type LLMProvider = 'anthropic' | 'openai' | 'custom';
 
 /**
+ * CodeAct sandbox configuration for code execution safety
+ */
+export interface SandboxConfig {
+    /** Allow file system operations (default: false) */
+    allowFileSystem?: boolean;
+    /** Allow network operations (default: false) */
+    allowNetwork?: boolean;
+    /** List of allowed modules (default: ['playwright']) */
+    allowedModules?: string[];
+}
+
+/**
+ * Planner agent safety boundary configuration
+ */
+export interface PlannerConfig {
+    /** Maximum iterations for planner loop (default: 20) */
+    maxIterations?: number;
+    /** Maximum tokens per LLM request (default: 8000) */
+    maxTokensPerRequest?: number;
+    /** Maximum consecutive failures before stopping (default: 3) */
+    maxConsecutiveFailures?: number;
+}
+
+/**
+ * CodeAct agent safety boundary configuration
+ */
+export interface CodeActConfig {
+    /** Maximum iterations for ReAct loop (default: 5) */
+    maxReactIterations?: number;
+    /** Code execution timeout in ms (default: 30000) */
+    codeExecutionTimeout?: number;
+    /** Maximum tokens per LLM request (default: 4000) */
+    maxTokensPerRequest?: number;
+    /** Sandbox configuration for code execution */
+    sandbox?: SandboxConfig;
+}
+
+/**
  * Full LLM configuration interface
  */
 export interface LLMConfig {
-  // Provider settings
-  provider?: LLMProvider;
-  apiKey?: string;
-  baseUrl?: string;
-  
-  // Model settings
-  model?: string;
-  
-  // Generation parameters (all optional)
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  maxTokens?: number;
-  
-  // Timeout settings
-  timeout?: number;
-  maxRetries?: number;
+    // Provider settings
+    provider?: LLMProvider;
+    apiKey?: string;
+    baseUrl?: string;
+
+    // Model settings
+    model?: string;
+
+    // Generation parameters (all optional)
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    maxTokens?: number;
+
+    // Timeout settings
+    timeout?: number;
+    maxRetries?: number;
+
+    // Agent-specific configurations
+    /** Planner agent safety boundary configuration */
+    planner?: PlannerConfig;
+    /** CodeAct agent safety boundary configuration */
+    codeact?: CodeActConfig;
 }
+
+/**
+ * Default sandbox configuration
+ */
+export const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
+    allowFileSystem: false,
+    allowNetwork: false,
+    allowedModules: ['playwright'],
+};
+
+/**
+ * Default planner configuration
+ */
+export const DEFAULT_PLANNER_CONFIG: Required<PlannerConfig> = {
+    maxIterations: 20,
+    maxTokensPerRequest: 8000,
+    maxConsecutiveFailures: 3,
+};
+
+/**
+ * Default CodeAct configuration
+ */
+export const DEFAULT_CODEACT_CONFIG: Required<
+    Omit<CodeActConfig, 'sandbox'>
+> & { sandbox: Required<SandboxConfig> } = {
+    maxReactIterations: 5,
+    codeExecutionTimeout: 30000,
+    maxTokensPerRequest: 4000,
+    sandbox: DEFAULT_SANDBOX_CONFIG,
+};
 
 /**
  * Default configuration values
  */
-export const DEFAULT_LLM_CONFIG: Required<Omit<LLMConfig, 'apiKey' | 'baseUrl' | 'topK' | 'maxTokens'>> & Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'topK' | 'maxTokens'> = {
-  provider: 'anthropic',
-  apiKey: undefined,
-  baseUrl: undefined,
-  model: 'claude-3-haiku-20240307',
-  temperature: 0,
-  topP: 1,
-  topK: undefined,
-  maxTokens: undefined,
-  timeout: 60000,
-  maxRetries: 3,
+export const DEFAULT_LLM_CONFIG: Required<
+    Omit<
+        LLMConfig,
+        'apiKey' | 'baseUrl' | 'topK' | 'maxTokens' | 'planner' | 'codeact'
+    >
+> &
+    Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'topK' | 'maxTokens'> & {
+        planner: Required<PlannerConfig>;
+        codeact: Required<Omit<CodeActConfig, 'sandbox'>> & {
+            sandbox: Required<SandboxConfig>;
+        };
+    } = {
+    provider: 'anthropic',
+    apiKey: undefined,
+    baseUrl: undefined,
+    model: 'claude-3-haiku-20240307',
+    temperature: 0,
+    topP: 1,
+    topK: undefined,
+    maxTokens: undefined,
+    timeout: 60000,
+    maxRetries: 3,
+    planner: DEFAULT_PLANNER_CONFIG,
+    codeact: DEFAULT_CODEACT_CONFIG,
 };
 
 /**
  * Config file search paths (in priority order)
  */
 const CONFIG_PATHS = [
-  // Project-level config
-  './llm.config.json',
-  './.llm.config.json',
-  // User-level config
-  path.join(os.homedir(), '.chat-agent', 'llm.config.json'),
-  path.join(os.homedir(), '.config', 'chat-agent', 'llm.config.json'),
+    // Project-level config
+    './llm.config.json',
+    './.llm.config.json',
+    // User-level config
+    path.join(os.homedir(), '.chat-agent', 'llm.config.json'),
+    path.join(os.homedir(), '.config', 'chat-agent', 'llm.config.json'),
 ];
 
 /**
- * Environment variable mappings
+ * Environment variable mappings for base LLM config
  */
-const ENV_MAPPINGS: Record<keyof LLMConfig, string> = {
-  provider: 'LLM_PROVIDER',
-  apiKey: 'ANTHROPIC_API_KEY',
-  baseUrl: 'ANTHROPIC_API_URL',
-  model: 'LLM_MODEL',
-  temperature: 'LLM_TEMPERATURE',
-  topP: 'LLM_TOP_P',
-  topK: 'LLM_TOP_K',
-  maxTokens: 'LLM_MAX_TOKENS',
-  timeout: 'LLM_TIMEOUT',
-  maxRetries: 'LLM_MAX_RETRIES',
-};
+const ENV_MAPPINGS = {
+    provider: 'LLM_PROVIDER',
+    apiKey: 'ANTHROPIC_API_KEY',
+    baseUrl: 'ANTHROPIC_API_URL',
+    model: 'LLM_MODEL',
+    temperature: 'LLM_TEMPERATURE',
+    topP: 'LLM_TOP_P',
+    topK: 'LLM_TOP_K',
+    maxTokens: 'LLM_MAX_TOKENS',
+    timeout: 'LLM_TIMEOUT',
+    maxRetries: 'LLM_MAX_RETRIES',
+} as const;
 
 /**
  * Find the first existing config file
  */
 function findConfigFile(customPath?: string): string | null {
-  const paths = customPath ? [customPath, ...CONFIG_PATHS] : CONFIG_PATHS;
-  
-  for (const configPath of paths) {
-    const absolutePath = path.isAbsolute(configPath) 
-      ? configPath 
-      : path.resolve(process.cwd(), configPath);
-    
-    if (fs.existsSync(absolutePath)) {
-      return absolutePath;
+    const paths = customPath ? [customPath, ...CONFIG_PATHS] : CONFIG_PATHS;
+
+    for (const configPath of paths) {
+        const absolutePath = path.isAbsolute(configPath)
+            ? configPath
+            : path.resolve(process.cwd(), configPath);
+
+        if (fs.existsSync(absolutePath)) {
+            return absolutePath;
+        }
     }
-  }
-  
-  return null;
+
+    return null;
+}
+
+/**
+ * Parse and validate sandbox configuration
+ */
+function parseSandboxConfig(config: unknown): SandboxConfig | undefined {
+    if (!config || typeof config !== 'object') return undefined;
+
+    const sandbox: SandboxConfig = {};
+    const c = config as Record<string, unknown>;
+
+    if (typeof c.allowFileSystem === 'boolean') {
+        sandbox.allowFileSystem = c.allowFileSystem;
+    }
+    if (typeof c.allowNetwork === 'boolean') {
+        sandbox.allowNetwork = c.allowNetwork;
+    }
+    if (Array.isArray(c.allowedModules)) {
+        sandbox.allowedModules = c.allowedModules.filter(
+            (m): m is string => typeof m === 'string'
+        );
+    }
+
+    return Object.keys(sandbox).length > 0 ? sandbox : undefined;
+}
+
+/**
+ * Parse and validate planner configuration
+ */
+function parsePlannerConfig(config: unknown): PlannerConfig | undefined {
+    if (!config || typeof config !== 'object') return undefined;
+
+    const planner: PlannerConfig = {};
+    const c = config as Record<string, unknown>;
+
+    if (typeof c.maxIterations === 'number' && c.maxIterations > 0) {
+        planner.maxIterations = c.maxIterations;
+    }
+    if (
+        typeof c.maxTokensPerRequest === 'number' &&
+        c.maxTokensPerRequest > 0
+    ) {
+        planner.maxTokensPerRequest = c.maxTokensPerRequest;
+    }
+    if (
+        typeof c.maxConsecutiveFailures === 'number' &&
+        c.maxConsecutiveFailures >= 0
+    ) {
+        planner.maxConsecutiveFailures = c.maxConsecutiveFailures;
+    }
+
+    return Object.keys(planner).length > 0 ? planner : undefined;
+}
+
+/**
+ * Parse and validate CodeAct configuration
+ */
+function parseCodeActConfig(config: unknown): CodeActConfig | undefined {
+    if (!config || typeof config !== 'object') return undefined;
+
+    const codeact: CodeActConfig = {};
+    const c = config as Record<string, unknown>;
+
+    if (typeof c.maxReactIterations === 'number' && c.maxReactIterations > 0) {
+        codeact.maxReactIterations = c.maxReactIterations;
+    }
+    if (
+        typeof c.codeExecutionTimeout === 'number' &&
+        c.codeExecutionTimeout > 0
+    ) {
+        codeact.codeExecutionTimeout = c.codeExecutionTimeout;
+    }
+    if (
+        typeof c.maxTokensPerRequest === 'number' &&
+        c.maxTokensPerRequest > 0
+    ) {
+        codeact.maxTokensPerRequest = c.maxTokensPerRequest;
+    }
+
+    const sandbox = parseSandboxConfig(c.sandbox);
+    if (sandbox) {
+        codeact.sandbox = sandbox;
+    }
+
+    return Object.keys(codeact).length > 0 ? codeact : undefined;
 }
 
 /**
  * Load config from JSON file
  */
 function loadConfigFile(filePath: string): Partial<LLMConfig> {
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const config = JSON.parse(content);
-    
-    // Validate and sanitize
-    const validated: Partial<LLMConfig> = {};
-    
-    if (typeof config.provider === 'string') {
-      validated.provider = config.provider as LLMProvider;
+    try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const config = JSON.parse(content);
+
+        // Validate and sanitize base config
+        const validated: Partial<LLMConfig> = {};
+
+        if (typeof config.provider === 'string') {
+            validated.provider = config.provider as LLMProvider;
+        }
+        if (typeof config.apiKey === 'string') {
+            validated.apiKey = config.apiKey;
+        }
+        if (typeof config.baseUrl === 'string') {
+            validated.baseUrl = config.baseUrl;
+        }
+        if (typeof config.model === 'string') {
+            validated.model = config.model;
+        }
+        if (typeof config.temperature === 'number') {
+            validated.temperature = Math.max(
+                0,
+                Math.min(2, config.temperature)
+            );
+        }
+        if (typeof config.topP === 'number') {
+            validated.topP = Math.max(0, Math.min(1, config.topP));
+        }
+        if (typeof config.topK === 'number' && config.topK > 0) {
+            validated.topK = config.topK;
+        }
+        if (typeof config.maxTokens === 'number' && config.maxTokens > 0) {
+            validated.maxTokens = config.maxTokens;
+        }
+        if (typeof config.timeout === 'number' && config.timeout > 0) {
+            validated.timeout = config.timeout;
+        }
+        if (typeof config.maxRetries === 'number' && config.maxRetries >= 0) {
+            validated.maxRetries = config.maxRetries;
+        }
+
+        // Parse nested agent configurations
+        const plannerConfig = parsePlannerConfig(config.planner);
+        if (plannerConfig) {
+            validated.planner = plannerConfig;
+        }
+
+        const codeactConfig = parseCodeActConfig(config.codeact);
+        if (codeactConfig) {
+            validated.codeact = codeactConfig;
+        }
+
+        return validated;
+    } catch (error) {
+        console.warn(
+            `[LLMConfig] Failed to load config from ${filePath}:`,
+            error
+        );
+        return {};
     }
-    if (typeof config.apiKey === 'string') {
-      validated.apiKey = config.apiKey;
-    }
-    if (typeof config.baseUrl === 'string') {
-      validated.baseUrl = config.baseUrl;
-    }
-    if (typeof config.model === 'string') {
-      validated.model = config.model;
-    }
-    if (typeof config.temperature === 'number') {
-      validated.temperature = Math.max(0, Math.min(2, config.temperature));
-    }
-    if (typeof config.topP === 'number') {
-      validated.topP = Math.max(0, Math.min(1, config.topP));
-    }
-    if (typeof config.topK === 'number' && config.topK > 0) {
-      validated.topK = config.topK;
-    }
-    if (typeof config.maxTokens === 'number' && config.maxTokens > 0) {
-      validated.maxTokens = config.maxTokens;
-    }
-    if (typeof config.timeout === 'number' && config.timeout > 0) {
-      validated.timeout = config.timeout;
-    }
-    if (typeof config.maxRetries === 'number' && config.maxRetries >= 0) {
-      validated.maxRetries = config.maxRetries;
-    }
-    
-    return validated;
-  } catch (error) {
-    console.warn(`[LLMConfig] Failed to load config from ${filePath}:`, error);
-    return {};
-  }
 }
 
 /**
  * Load config from environment variables
  */
 function loadEnvConfig(): Partial<LLMConfig> {
-  const config: Partial<LLMConfig> = {};
-  
-  // String values
-  if (process.env[ENV_MAPPINGS.provider]) {
-    config.provider = process.env[ENV_MAPPINGS.provider] as LLMProvider;
-  }
-  if (process.env[ENV_MAPPINGS.apiKey]) {
-    config.apiKey = process.env[ENV_MAPPINGS.apiKey];
-  }
-  if (process.env[ENV_MAPPINGS.baseUrl]) {
-    config.baseUrl = process.env[ENV_MAPPINGS.baseUrl];
-  }
-  if (process.env[ENV_MAPPINGS.model]) {
-    config.model = process.env[ENV_MAPPINGS.model];
-  }
-  
-  // Numeric values
-  const tempStr = process.env[ENV_MAPPINGS.temperature];
-  if (tempStr) {
-    const temp = parseFloat(tempStr);
-    if (!isNaN(temp)) config.temperature = temp;
-  }
-  
-  const topPStr = process.env[ENV_MAPPINGS.topP];
-  if (topPStr) {
-    const topP = parseFloat(topPStr);
-    if (!isNaN(topP)) config.topP = topP;
-  }
-  
-  const topKStr = process.env[ENV_MAPPINGS.topK];
-  if (topKStr) {
-    const topK = parseInt(topKStr, 10);
-    if (!isNaN(topK)) config.topK = topK;
-  }
-  
-  const maxTokensStr = process.env[ENV_MAPPINGS.maxTokens];
-  if (maxTokensStr) {
-    const maxTokens = parseInt(maxTokensStr, 10);
-    if (!isNaN(maxTokens)) config.maxTokens = maxTokens;
-  }
-  
-  const timeoutStr = process.env[ENV_MAPPINGS.timeout];
-  if (timeoutStr) {
-    const timeout = parseInt(timeoutStr, 10);
-    if (!isNaN(timeout)) config.timeout = timeout;
-  }
-  
-  const maxRetriesStr = process.env[ENV_MAPPINGS.maxRetries];
-  if (maxRetriesStr) {
-    const maxRetries = parseInt(maxRetriesStr, 10);
-    if (!isNaN(maxRetries)) config.maxRetries = maxRetries;
-  }
-  
-  return config;
+    const config: Partial<LLMConfig> = {};
+
+    // String values
+    if (process.env[ENV_MAPPINGS.provider]) {
+        config.provider = process.env[ENV_MAPPINGS.provider] as LLMProvider;
+    }
+    if (process.env[ENV_MAPPINGS.apiKey]) {
+        config.apiKey = process.env[ENV_MAPPINGS.apiKey];
+    }
+    if (process.env[ENV_MAPPINGS.baseUrl]) {
+        config.baseUrl = process.env[ENV_MAPPINGS.baseUrl];
+    }
+    if (process.env[ENV_MAPPINGS.model]) {
+        config.model = process.env[ENV_MAPPINGS.model];
+    }
+
+    // Numeric values
+    const tempStr = process.env[ENV_MAPPINGS.temperature];
+    if (tempStr) {
+        const temp = parseFloat(tempStr);
+        if (!isNaN(temp)) config.temperature = temp;
+    }
+
+    const topPStr = process.env[ENV_MAPPINGS.topP];
+    if (topPStr) {
+        const topP = parseFloat(topPStr);
+        if (!isNaN(topP)) config.topP = topP;
+    }
+
+    const topKStr = process.env[ENV_MAPPINGS.topK];
+    if (topKStr) {
+        const topK = parseInt(topKStr, 10);
+        if (!isNaN(topK)) config.topK = topK;
+    }
+
+    const maxTokensStr = process.env[ENV_MAPPINGS.maxTokens];
+    if (maxTokensStr) {
+        const maxTokens = parseInt(maxTokensStr, 10);
+        if (!isNaN(maxTokens)) config.maxTokens = maxTokens;
+    }
+
+    const timeoutStr = process.env[ENV_MAPPINGS.timeout];
+    if (timeoutStr) {
+        const timeout = parseInt(timeoutStr, 10);
+        if (!isNaN(timeout)) config.timeout = timeout;
+    }
+
+    const maxRetriesStr = process.env[ENV_MAPPINGS.maxRetries];
+    if (maxRetriesStr) {
+        const maxRetries = parseInt(maxRetriesStr, 10);
+        if (!isNaN(maxRetries)) config.maxRetries = maxRetries;
+    }
+
+    return config;
 }
 
 /**
@@ -221,193 +410,246 @@ let cachedConfigPath: string | null = null;
  * Model-specific configuration constraints
  */
 interface ModelConstraint {
-  /** Pattern to match model names */
-  pattern: RegExp;
-  /** Description for logging */
-  description: string;
-  /** Validation and auto-fix function */
-  validate: (config: LLMConfig) => { fixed: LLMConfig; warnings: string[] };
+    /** Pattern to match model names */
+    pattern: RegExp;
+    /** Description for logging */
+    description: string;
+    /** Validation and auto-fix function */
+    validate: (config: LLMConfig) => { fixed: LLMConfig; warnings: string[] };
 }
 
 /**
  * Claude 4.5 models cannot have both temperature and top_p set
  * When both are present, we keep temperature and remove top_p
  */
-function validateClaude45Config(config: LLMConfig): { fixed: LLMConfig; warnings: string[] } {
-  const warnings: string[] = [];
-  const fixed = { ...config };
-  
-  const hasTemperature = fixed.temperature !== undefined;
-  const hasTopP = fixed.topP !== undefined;
-  
-  if (hasTemperature && hasTopP) {
-    warnings.push(
-      `Claude 4.5 models cannot use both temperature and top_p. ` +
-      `Keeping temperature=${fixed.temperature}, removing top_p=${fixed.topP}`
-    );
-    delete fixed.topP;
-  }
-  
-  return { fixed, warnings };
+function validateClaude45Config(config: LLMConfig): {
+    fixed: LLMConfig;
+    warnings: string[];
+} {
+    const warnings: string[] = [];
+    const fixed = { ...config };
+
+    const hasTemperature = fixed.temperature !== undefined;
+    const hasTopP = fixed.topP !== undefined;
+
+    if (hasTemperature && hasTopP) {
+        warnings.push(
+            `Claude 4.5 models cannot use both temperature and top_p. ` +
+                `Keeping temperature=${fixed.temperature}, removing top_p=${fixed.topP}`
+        );
+        delete fixed.topP;
+    }
+
+    return { fixed, warnings };
 }
 
 /**
  * Model constraints registry
  */
 const MODEL_CONSTRAINTS: ModelConstraint[] = [
-  {
-    pattern: /^claude-(sonnet|opus)-4-5-/i,
-    description: 'Claude 4.5 models',
-    validate: validateClaude45Config,
-  },
+    {
+        pattern: /^claude-(sonnet|opus)-4-5-/i,
+        description: 'Claude 4.5 models',
+        validate: validateClaude45Config,
+    },
 ];
 
 /**
  * Validate and auto-fix model-specific configuration
- * 
+ *
  * @param config The merged LLM config to validate
  * @returns Fixed config with any necessary adjustments
  */
 function validateAndFixConfig(config: LLMConfig): LLMConfig {
-  if (!config.model) {
-    return config;
-  }
-  
-  let currentConfig = { ...config };
-  
-  for (const constraint of MODEL_CONSTRAINTS) {
-    if (constraint.pattern.test(config.model)) {
-      const { fixed, warnings } = constraint.validate(currentConfig);
-      
-      for (const warning of warnings) {
-        console.warn(`[LLMConfig] Auto-fix (${constraint.description}): ${warning}`);
-      }
-      
-      currentConfig = fixed;
+    if (!config.model) {
+        return config;
     }
-  }
-  
-  return currentConfig;
+
+    let currentConfig = { ...config };
+
+    for (const constraint of MODEL_CONSTRAINTS) {
+        if (constraint.pattern.test(config.model)) {
+            const { fixed, warnings } = constraint.validate(currentConfig);
+
+            for (const warning of warnings) {
+                console.warn(
+                    `[LLMConfig] Auto-fix (${constraint.description}): ${warning}`
+                );
+            }
+
+            currentConfig = fixed;
+        }
+    }
+
+    return currentConfig;
 }
 
 /**
  * Load LLM configuration
- * 
+ *
  * Priority (highest to lowest):
  * 1. Runtime overrides (passed as parameter)
  * 2. Environment variables
  * 3. Config file
  * 4. Default values
- * 
+ *
  * @param overrides Runtime configuration overrides
  * @param customConfigPath Custom path to config file
  * @param forceReload Force reload config (ignore cache)
  */
 export function loadLLMConfig(
-  overrides?: Partial<LLMConfig>,
-  customConfigPath?: string,
-  forceReload = false
+    overrides?: Partial<LLMConfig>,
+    customConfigPath?: string,
+    forceReload = false
 ): LLMConfig {
-  // Return cached config if available and not forcing reload
-  if (cachedConfig && !forceReload && !overrides && !customConfigPath) {
-    return cachedConfig;
-  }
-  
-  // Load from file
-  const configPath = findConfigFile(customConfigPath);
-  const fileConfig = configPath ? loadConfigFile(configPath) : {};
-  
-  if (configPath) {
-    console.log(`[LLMConfig] Loaded config from: ${configPath}`);
-    cachedConfigPath = configPath;
-  }
-  
-  // Load from environment
-  const envConfig = loadEnvConfig();
-  
-  // Merge configs (priority: overrides > env > file > defaults)
-  // Helper to filter out undefined keys from a config object (shallow)
+    // Return cached config if available and not forcing reload
+    if (cachedConfig && !forceReload && !overrides && !customConfigPath) {
+        return cachedConfig;
+    }
 
-  function filterUndefined<T extends object>(obj: T): Partial<T> {
-    return _.omitBy(obj, _.isNil) as Partial<T>;
-  }
+    // Load from file
+    const configPath = findConfigFile(customConfigPath);
+    const fileConfig = configPath ? loadConfigFile(configPath) : {};
 
-  const mergedConfig: LLMConfig = {
-    ...filterUndefined(DEFAULT_LLM_CONFIG),
-    ...filterUndefined(fileConfig),
-    ...filterUndefined(envConfig),
-    ...filterUndefined(overrides ?? {}),
-  };
-  
-  // Validate and auto-fix model-specific configurations
-  const validatedConfig = validateAndFixConfig(mergedConfig);
+    if (configPath) {
+        console.log(`[LLMConfig] Loaded config from: ${configPath}`);
+        cachedConfigPath = configPath;
+    }
 
-  // console.log("================================================")
-  // console.log("[LLMConfig] Default Config:", DEFAULT_LLM_CONFIG);
-  // console.log("[LLMConfig] File Config:", fileConfig);
-  // console.log("[LLMConfig] Env Config:", envConfig);
-  // console.log("[LLMConfig] Overrides:", overrides);
-  // console.log("[LLMConfig] Merged Config:", mergedConfig);
-  // console.log("[LLMConfig] Validated Config:", validatedConfig);
-  // console.log("================================================");
-  
-  // Cache the config
-  if (!overrides && !customConfigPath) {
-    cachedConfig = validatedConfig;
-  }
-  
-  return validatedConfig;
+    // Load from environment
+    const envConfig = loadEnvConfig();
+
+    // Merge configs (priority: overrides > env > file > defaults)
+    // Helper to filter out undefined keys from a config object (shallow)
+
+    function filterUndefined<T extends object>(obj: T): Partial<T> {
+        return _.omitBy(obj, _.isNil) as Partial<T>;
+    }
+
+    const mergedConfig: LLMConfig = {
+        ...filterUndefined(DEFAULT_LLM_CONFIG),
+        ...filterUndefined(fileConfig),
+        ...filterUndefined(envConfig),
+        ...filterUndefined(overrides ?? {}),
+    };
+
+    // Validate and auto-fix model-specific configurations
+    const validatedConfig = validateAndFixConfig(mergedConfig);
+
+    // console.log("================================================")
+    // console.log("[LLMConfig] Default Config:", DEFAULT_LLM_CONFIG);
+    // console.log("[LLMConfig] File Config:", fileConfig);
+    // console.log("[LLMConfig] Env Config:", envConfig);
+    // console.log("[LLMConfig] Overrides:", overrides);
+    // console.log("[LLMConfig] Merged Config:", mergedConfig);
+    // console.log("[LLMConfig] Validated Config:", validatedConfig);
+    // console.log("================================================");
+
+    // Cache the config
+    if (!overrides && !customConfigPath) {
+        cachedConfig = validatedConfig;
+    }
+
+    return validatedConfig;
 }
 
 /**
  * Get the path of the currently loaded config file
  */
 export function getConfigPath(): string | null {
-  return cachedConfigPath;
+    return cachedConfigPath;
 }
 
 /**
  * Clear cached config (useful for testing or hot-reload)
  */
 export function clearConfigCache(): void {
-  cachedConfig = null;
-  cachedConfigPath = null;
+    cachedConfig = null;
+    cachedConfigPath = null;
+}
+
+/**
+ * Get merged planner config with defaults
+ */
+export function getPlannerConfig(config?: LLMConfig): Required<PlannerConfig> {
+    const loaded = config || loadLLMConfig();
+    return {
+        ...DEFAULT_PLANNER_CONFIG,
+        ...loaded.planner,
+    };
+}
+
+/**
+ * Get merged CodeAct config with defaults
+ */
+export function getCodeActConfig(config?: LLMConfig): Required<
+    Omit<CodeActConfig, 'sandbox'>
+> & {
+    sandbox: Required<SandboxConfig>;
+} {
+    const loaded = config || loadLLMConfig();
+    return {
+        ...DEFAULT_CODEACT_CONFIG,
+        ...loaded.codeact,
+        sandbox: {
+            ...DEFAULT_SANDBOX_CONFIG,
+            ...loaded.codeact?.sandbox,
+        },
+    };
 }
 
 /**
  * Create a sample config file
  */
 export function createSampleConfig(outputPath?: string): string {
-  const sampleConfig = {
-    // LLM Provider: "anthropic" | "openai" | "custom"
-    provider: "anthropic",
-    
-    // API Key (can also use ANTHROPIC_API_KEY env var)
-    // apiKey: "your-api-key-here",
-    
-    // Custom API endpoint (optional)
-    // baseUrl: "https://api.anthropic.com",
-    
-    // Model name
-    model: "claude-3-haiku-20240307",
-    
-    // Generation parameters
-    temperature: 0,
-    topP: 1,
-    // topK: 40,
-    // maxTokens: 4096,
-    
-    // Timeout settings
-    timeout: 60000,
-    maxRetries: 3,
-  };
-  
-  const configJson = JSON.stringify(sampleConfig, null, 2);
-  const targetPath = outputPath || './llm.config.json';
-  
-  fs.writeFileSync(targetPath, configJson, 'utf-8');
-  console.log(`[LLMConfig] Sample config created at: ${targetPath}`);
-  
-  return targetPath;
-}
+    const sampleConfig = {
+        // LLM Provider: "anthropic" | "openai" | "custom"
+        provider: 'anthropic',
 
+        // API Key (can also use ANTHROPIC_API_KEY env var)
+        // apiKey: "your-api-key-here",
+
+        // Custom API endpoint (optional)
+        // baseUrl: "https://api.anthropic.com",
+
+        // Model name
+        model: 'claude-3-haiku-20240307',
+
+        // Generation parameters
+        temperature: 0,
+        topP: 1,
+        // topK: 40,
+        // maxTokens: 4096,
+
+        // Timeout settings
+        timeout: 60000,
+        maxRetries: 3,
+
+        // Planner agent configuration
+        planner: {
+            maxIterations: 20,
+            maxTokensPerRequest: 8000,
+            maxConsecutiveFailures: 3,
+        },
+
+        // CodeAct agent configuration
+        codeact: {
+            maxReactIterations: 5,
+            codeExecutionTimeout: 30000,
+            maxTokensPerRequest: 4000,
+            sandbox: {
+                allowFileSystem: false,
+                allowNetwork: false,
+                allowedModules: ['playwright'],
+            },
+        },
+    };
+
+    const configJson = JSON.stringify(sampleConfig, null, 2);
+    const targetPath = outputPath || './llm.config.json';
+
+    fs.writeFileSync(targetPath, configJson, 'utf-8');
+    console.log(`[LLMConfig] Sample config created at: ${targetPath}`);
+
+    return targetPath;
+}

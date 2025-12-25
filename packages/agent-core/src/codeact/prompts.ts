@@ -224,3 +224,162 @@ export function parseCodeActResponse(response: string): CodeActDecision | null {
   }
 }
 
+// =============================================================================
+// ReAct Agent Prompts and Parsing
+// =============================================================================
+
+/**
+ * System prompt for CodeAct ReAct Agent
+ * Guides LLM to select and call tools dynamically
+ */
+export const CODEACT_REACT_SYSTEM_PROMPT = `You are a browser automation agent that completes tasks by calling tools.
+
+## Available Tools
+
+### 1. runCode
+Execute Playwright code to interact with the browser.
+- context: Playwright BrowserContext (connected via CDP)
+- browser: Playwright Browser instance
+- state: Persistent state object for storing variables
+
+**Usage:**
+\`\`\`json
+{"tool": "runCode", "args": {"code": "your playwright code"}, "thought": "why this code"}
+\`\`\`
+
+**Code Guidelines:**
+- Get pages from context.pages()
+- Use state.xxx to store/retrieve data between executions
+- Return { success: boolean, ...data } from your code
+- Prefer text-based selectors: \`*:has-text("text")\`
+
+### 2. summarizeResult
+Summarize a large result object for clearer understanding.
+\`\`\`json
+{"tool": "summarizeResult", "args": {"data": <object to summarize>}, "thought": "why summarize"}
+\`\`\`
+
+### 3. fetchData
+Get data from execution state.
+\`\`\`json
+{"tool": "fetchData", "args": {"target": "all|keys|single", "name": "varName"}, "thought": "why fetch"}
+\`\`\`
+- target: "all" (all variables), "keys" (variable names only), "single" (one variable by name)
+
+### 4. finish
+Complete the task and return the result.
+\`\`\`json
+{"tool": "finish", "args": {"result": "task result description"}, "thought": "summary"}
+\`\`\`
+
+## Response Format (JSON only)
+Always respond with a single JSON object selecting ONE tool to call.
+
+## Rules
+1. Think step by step about what action to take
+2. Call runCode to execute browser operations
+3. Use summarizeResult if results are too large to reason about
+4. Use fetchData to inspect stored variables
+5. Call finish when the task is complete
+6. If an operation fails, analyze the error and try a different approach`;
+
+/**
+ * Tool history entry for prompt context
+ */
+export interface ToolHistoryEntry {
+  tool: string;
+  args: unknown;
+  success: boolean;
+  summary: string;
+}
+
+/**
+ * Build user message for ReAct agent
+ */
+export function buildReActUserMessage(params: {
+  instruction: string;
+  availableVariables?: VariableSummary[];
+  toolHistory?: ToolHistoryEntry[];
+}): string {
+  const { instruction, availableVariables, toolHistory } = params;
+
+  let message = `## Task
+${instruction}
+
+`;
+
+  // Include available variables
+  if (availableVariables && availableVariables.length > 0) {
+    message += `## Current State Variables
+${formatAvailableVariables(availableVariables)}
+
+`;
+  }
+
+  // Include tool execution history
+  if (toolHistory && toolHistory.length > 0) {
+    message += `## Previous Tool Executions
+${formatToolHistory(toolHistory)}
+
+`;
+  }
+
+  message += `## Your Turn
+Analyze the task and tool history. Decide which tool to call next, or call "finish" if the task is complete.
+Respond with a single JSON object.`;
+
+  return message;
+}
+
+/**
+ * Format tool history for prompt
+ */
+function formatToolHistory(history: ToolHistoryEntry[]): string {
+  return history
+    .map((entry, i) => {
+      const status = entry.success ? '✓' : '✗';
+      const argsStr = typeof entry.args === 'string'
+        ? entry.args.slice(0, 100)
+        : JSON.stringify(entry.args).slice(0, 100);
+      return `${i + 1}. [${status}] ${entry.tool}(${argsStr}...)
+   Result: ${entry.summary.slice(0, 200)}`;
+    })
+    .join('\n\n');
+}
+
+/**
+ * Parsed tool call from LLM response
+ */
+export interface ParsedToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+  thought?: string;
+}
+
+/**
+ * Parse tool call from LLM response
+ */
+export function parseToolCall(response: string): ParsedToolCall | null {
+  try {
+    // Try to extract JSON from response
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    if (!parsed.tool) {
+      return null;
+    }
+
+    return {
+      tool: parsed.tool,
+      args: parsed.args || {},
+      thought: parsed.thought,
+    };
+  } catch {
+    return null;
+  }
+}
+
