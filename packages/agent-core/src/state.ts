@@ -25,6 +25,19 @@ export interface MemoryContext {
 }
 
 /**
+ * Variable summary for prompt injection
+ * Used to inform LLM about available variables in state
+ */
+export interface VariableSummary {
+  /** Variable name */
+  name: string;
+  /** JavaScript type of the value */
+  type: string;
+  /** Preview of the value (first 100 chars) */
+  preview: string;
+}
+
+/**
  * Agent status enum (RA-05: loop termination states)
  */
 export type AgentStatus = 
@@ -384,6 +397,31 @@ export const AgentStateAnnotation = Annotation.Root({
   summaryMessageCount: Annotation<number>({
     reducer: (_, newValue) => newValue,
     default: () => 0,
+  }),
+
+  // CodeAct: Persistent execution variables across code executions
+  // Variables stored here are accessible via `state` object in generated code
+  // Uses replace strategy (not merge) to properly handle variable deletions
+  executionVariables: Annotation<Record<string, unknown>>({
+    reducer: (existing, newVars) => {
+      // If newVars is undefined/null, keep existing state
+      if (newVars === undefined || newVars === null) return existing;
+      // Replace entirely to handle variable deletions properly
+      // The executor returns the complete updated state object
+      return newVars;
+    },
+    default: () => ({}),
+  }),
+
+  // CodeAct: Variable summary for prompt injection
+  // Informs LLM about available variables in state
+  variableSummary: Annotation<VariableSummary[]>({
+    reducer: (existing, newValue) => {
+      // If newValue is undefined/null, keep existing summary
+      if (newValue === undefined || newValue === null) return existing;
+      return newValue;
+    },
+    default: () => [],
   }),
 });
 

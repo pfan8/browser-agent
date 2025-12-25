@@ -225,23 +225,35 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
   /**
    * Execute arbitrary Playwright code
    * 
-   * The code can access: context, browser
+   * The code can access: context, browser, state
+   * - context: Playwright BrowserContext
+   * - browser: Playwright Browser
+   * - state: Persistent state object for storing variables across executions
+   * 
    * Code should manage pages via context.pages() or context.newPage()
    * 
    * Code can be:
    * 1. A simple expression: await context.pages()[0].goto('...')
    * 2. A function body with return: const page = context.pages()[0]; return { url: page.url() }
-   * 3. An async function definition: async function execute(context, browser) { ... }
+   * 3. An async function definition: async function execute(context, browser, state) { ... }
+   * 
+   * @param code - The Playwright code to execute
+   * @param variables - Optional state object that persists across executions within a session
    */
-  async runCode(code: string): Promise<CodeExecutionResult> {
+  async runCode(
+    code: string, 
+    variables: Record<string, unknown> = {}
+  ): Promise<CodeExecutionResult> {
     if (!this.context) {
       return { success: false, error: 'Browser not connected' };
     }
 
     const logs: string[] = [];
+    // Create a copy of variables to avoid mutating the original
+    const state: Record<string, unknown> = { ...variables };
     
     try {
-      log.info('Executing code', { codeLength: code.length });
+      log.info('Executing code', { codeLength: code.length, stateKeys: Object.keys(state) });
       log.debug('Code content', { code });
       
       // Check if code is a function definition
@@ -251,15 +263,15 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
       
       if (isFunctionDef) {
         // Code is a function definition - execute it and call the function
-        const asyncFunction = new Function('context', 'browser', `
+        const asyncFunction = new Function('context', 'browser', 'state', `
           return (async () => {
             ${code}
             // Call the defined function
             const funcName = ${JSON.stringify(code)}.match(/function\\s+(\\w+)/)[1];
-            return await eval(funcName)(context, browser);
+            return await eval(funcName)(context, browser, state);
           })();
         `);
-        result = await asyncFunction(this.context, this.browser);
+        result = await asyncFunction(this.context, this.browser, state);
       } else {
         // Check if code contains explicit return statement
         const hasReturn = /\breturn\s/.test(code);
@@ -272,12 +284,12 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
           wrappedCode = `return ${code.trim().replace(/;$/, '')}`;
         }
         
-        const asyncFunction = new Function('context', 'browser', `
+        const asyncFunction = new Function('context', 'browser', 'state', `
           return (async () => {
             ${wrappedCode}
           })();
         `);
-        result = await asyncFunction(this.context, this.browser);
+        result = await asyncFunction(this.context, this.browser, state);
       }
 
       this.emit('operation', {
@@ -287,7 +299,17 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         timestamp: new Date().toISOString()
       });
 
-      return { success: true, result, logs };
+      // Get current page URL and title
+      const { pageUrl, pageTitle } = await this.getCurrentPageInfo();
+
+      return { 
+        success: true, 
+        result, 
+        logs,
+        updatedVariables: state,
+        pageUrl,
+        pageTitle,
+      };
     } catch (error) {
       // Extract detailed error info for self-repair
       const errorInfo = this.extractErrorInfo(error, code);
@@ -297,6 +319,9 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         errorLine: errorInfo.line,
       });
       
+      // Get current page URL and title even on error
+      const { pageUrl, pageTitle } = await this.getCurrentPageInfo();
+      
       return { 
         success: false, 
         error: errorInfo.message, 
@@ -304,7 +329,32 @@ export class PlaywrightAdapter extends EventEmitter implements IBrowserAdapter {
         stackTrace: errorInfo.stackTrace,
         errorType: errorInfo.type,
         errorLine: errorInfo.line,
+        updatedVariables: state,
+        pageUrl,
+        pageTitle,
       };
+    }
+  }
+
+  /**
+   * Get current page URL and title
+   */
+  private async getCurrentPageInfo(): Promise<{ pageUrl?: string; pageTitle?: string }> {
+    try {
+      if (!this.context) {
+        return {};
+      }
+      const pages = this.context.pages().filter(p => !this.isInternalPage(p.url()));
+      if (pages.length === 0) {
+        return {};
+      }
+      const activePage = pages[0];
+      return {
+        pageUrl: activePage.url(),
+        pageTitle: await activePage.title(),
+      };
+    } catch {
+      return {};
     }
   }
 

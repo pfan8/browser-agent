@@ -18,6 +18,13 @@ export interface CodeExecutionResult {
   stackTrace?: string;    // Full stack trace when error occurs
   errorType?: string;     // Error type (SyntaxError, TimeoutError, etc.)
   errorLine?: number;     // Line number where error occurred in the code
+  
+  // Page state after execution
+  pageUrl?: string;       // Current page URL
+  pageTitle?: string;     // Current page title
+  
+  // CodeAct state management - updated variables after execution
+  updatedVariables?: Record<string, unknown>;
 }
 
 /**
@@ -53,8 +60,9 @@ export interface IBrowserAdapter {
   getLastConnectionError(): string | null;
   
   // Code execution - THE core method
-  // Code has access to: context, browser (Playwright objects)
-  runCode(code: string): Promise<CodeExecutionResult>;
+  // Code has access to: context, browser, state (Playwright objects + persistent state)
+  // variables: Optional state object that persists across executions within a session
+  runCode(code: string, variables?: Record<string, unknown>): Promise<CodeExecutionResult>;
   
   // Context management
   getContextsInfo(): Promise<ContextInfo[]>;

@@ -6,6 +6,7 @@
  */
 
 import type { CodeActDecision } from './types';
+import type { VariableSummary } from '../state';
 
 /**
  * System prompt for CodeAct (Iterative Mode)
@@ -16,6 +17,14 @@ export const CODEACT_ITERATIVE_SYSTEM_PROMPT = `You generate Playwright code to 
 ## Available Objects
 - context: Playwright BrowserContext (connected via CDP)
 - browser: Playwright Browser instance
+- state: Persistent state object for storing variables across executions
+
+## Variable Storage
+You have access to a persistent \`state\` object for storing variables across executions:
+- Store: \`state.myVar = value\`
+- Read: \`const x = state.myVar\`
+- Variables persist between code executions within the same session.
+- Use state to store data needed for later steps (e.g., scraped items, extracted values).
 
 ## Page Management
 Get pages from context.pages(). Choose the right page based on the task:
@@ -35,7 +44,8 @@ Prefer text-based selectors since users describe elements by visible text:
 ## Rules
 1. Return { success: boolean, ...data } from your code
 2. Use try-catch for error handling
-3. For file operations: const fs = await import('fs/promises')`;
+3. For file operations: const fs = await import('fs/promises')
+4. Use state.xxx to store/retrieve data between steps`;
 
 
 /**
@@ -47,6 +57,13 @@ export const CODEACT_SCRIPT_SYSTEM_PROMPT = `Generate complete Playwright script
 ## Available Objects
 - context: Playwright BrowserContext (connected via CDP)
 - browser: Playwright Browser instance
+- state: Persistent state object for storing variables across executions
+
+## Variable Storage
+You have access to a persistent \`state\` object for storing variables across executions:
+- Store: \`state.myVar = value\`
+- Read: \`const x = state.myVar\`
+- Variables persist between code executions within the same session.
 
 ## Page Management
 Get pages from context.pages(). Choose the right page based on the task:
@@ -61,9 +78,10 @@ Prefer text-based selectors since users describe elements by visible text:
 - Fall back to CSS selectors only when text matching is ambiguous
 
 ## Structure
-async function execute(context, browser) {
+async function execute(context, browser, state) {
   try {
     // your implementation
+    // use state.xxx to store/retrieve data
     return { success: true, data: {...} };
   } catch (e) {
     return { success: false, error: e.message };
@@ -71,7 +89,7 @@ async function execute(context, browser) {
 }
 
 ## Response Format (JSON only)
-{"thought": "...", "code": "async function execute(context, browser) {...}"}`;
+{"thought": "...", "code": "async function execute(context, browser, state) {...}"}`;
 
 /**
  * Previous attempt info for retry
@@ -94,22 +112,33 @@ export interface PreviousAttempt {
  * 
  * When retrying, it receives the previous failed code and error details
  * to help it self-repair.
+ * 
+ * Available variables are injected to inform LLM about state data.
  */
 export function buildCodeActUserMessage(params: {
   instruction: string;
   mode: 'iterative' | 'script';
   previousAttempt?: PreviousAttempt;
+  availableVariables?: VariableSummary[];
 }): string {
-  const { instruction, mode, previousAttempt } = params;
+  const { instruction, mode, previousAttempt, availableVariables } = params;
 
   let message = `## Instruction
 ${instruction}
 `;
 
+  // Inject available variables if any
+  if (availableVariables && availableVariables.length > 0) {
+    message += `
+## Current Variables in state
+${formatAvailableVariables(availableVariables)}
+`;
+  }
+
   // If retrying, include detailed error info for self-repair
   if (previousAttempt) {
     message += `
-## ⚠️ Previous Attempt Failed - Please Fix
+## Previous Attempt Failed - Please Fix
 
 **Error Type:** ${previousAttempt.errorType || 'Unknown'}
 **Error Message:** ${previousAttempt.error}
@@ -153,6 +182,19 @@ Generate a complete script to accomplish the entire task. Handle all steps and e
   }
 
   return message;
+}
+
+/**
+ * Format available variables for prompt injection
+ */
+function formatAvailableVariables(variables: VariableSummary[]): string {
+  if (variables.length === 0) {
+    return '(no variables stored yet)';
+  }
+  
+  return variables
+    .map(v => `- state.${v.name}: ${v.type} = ${v.preview}`)
+    .join('\n');
 }
 
 /**

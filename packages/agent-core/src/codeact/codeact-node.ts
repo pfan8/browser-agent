@@ -11,11 +11,10 @@
 
 import { ChatAnthropic } from '@langchain/anthropic';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import type { IBrowserAdapter, CodeExecutionResult } from '@chat-agent/browser-adapter';
-import type { AgentState } from '../state';
-import { generateId } from '../state';
+import type { IBrowserAdapter } from '@chat-agent/browser-adapter';
+import type { AgentState, VariableSummary } from '../state';
 import { loadLLMConfig } from '../config';
-import { createAgentLogger, startTimer } from '../tracing';
+import { createAgentLogger, startTimer, type TraceContext } from '../tracing';
 import { 
   CODEACT_ITERATIVE_SYSTEM_PROMPT, 
   CODEACT_SCRIPT_SYSTEM_PROMPT,
@@ -24,8 +23,35 @@ import {
   type PreviousAttempt,
 } from './prompts';
 import type { ExecutionMode, CodeResult } from './types';
+import {
+  executeCode,
+  buildVariableSummary,
+  createActionRecord,
+  buildNewObservation,
+} from './helpers';
 
 const log = createAgentLogger('CodeActNode');
+
+/**
+ * Immutable configuration created once per node instance
+ * Does NOT include per-invocation data like traceContext
+ */
+interface CodeActConfig {
+  browserAdapter: IBrowserAdapter;
+  llm: ChatAnthropic;
+  llmModel: string;
+  mode: ExecutionMode;
+  timeout: number;
+  systemPrompt: string;
+}
+
+/**
+ * Context passed to helper functions during execution
+ * Created fresh for each invocation to avoid race conditions
+ */
+interface ExecutionContext extends CodeActConfig {
+  traceContext: TraceContext | null;
+}
 
 /**
  * Configuration for the CodeAct node
@@ -84,91 +110,330 @@ export function createCodeActNode(
     llm = new ChatAnthropic(llmOptions);
   }
 
+  // Build immutable config once (shared across invocations, never mutated)
+  const codeActConfig: CodeActConfig = {
+    browserAdapter,
+    llm: llm!,
+    llmModel: llmConfig.model || 'unknown',
+    mode,
+    timeout,
+    systemPrompt: mode === 'script' 
+      ? CODEACT_SCRIPT_SYSTEM_PROMPT 
+      : CODEACT_ITERATIVE_SYSTEM_PROMPT,
+  };
+
   return async (state: AgentState): Promise<Partial<AgentState>> => {
     const traceContext = state.traceContext;
     const timer = startTimer(log, 'codeact', traceContext ?? undefined);
-
-    // Get instruction from Planner
-    const instruction = (state as any).currentInstruction as string | undefined;
     
+    // Create fresh execution context per invocation to avoid race conditions
+    // when multiple graph instances execute concurrently
+    const execContext: ExecutionContext = {
+      ...codeActConfig,
+      traceContext,
+    };
+
+    // Validate instruction
+    const instruction = (state as any).currentInstruction as string | undefined;
     if (!instruction) {
       log.error('No instruction from Planner');
-      return {
-        status: 'error',
-        error: 'No instruction provided by Planner',
-      };
+      return { status: 'error', error: 'No instruction provided by Planner' };
     }
-
-    // Log CodeAct input context for tracing
-    log.infoWithTrace(traceContext!, '[CODEACT] Input context', {
-      instruction,
-      mode,
-      iteration: state.iterationCount,
-      maxRetries,
-    });
 
     if (!hasLlm) {
-      return {
-        status: 'error',
-        error: 'LLM not configured for CodeAct',
-      };
+      return { status: 'error', error: 'LLM not configured for CodeAct' };
     }
 
-    // Select system prompt based on mode
-    const systemPrompt = mode === 'script' 
-      ? CODEACT_SCRIPT_SYSTEM_PROMPT 
-      : CODEACT_ITERATIVE_SYSTEM_PROMPT;
+    // Initialize variables from state
+    let currentVariables = state.executionVariables || {};
+    let currentVariableSummary = buildVariableSummary(currentVariables);
 
-    // Retry loop for self-repair
+    logInputContext(traceContext, instruction, mode, state.iterationCount, maxRetries, currentVariables);
+
+    // Run retry loop
+    const result = await runRetryLoop({
+      execContext,
+      state,
+      instruction,
+      maxRetries,
+      currentVariables,
+      currentVariableSummary,
+      timer,
+    });
+
+    return result;
+  };
+}
+
+/**
+ * Log input context for tracing
+ */
+function logInputContext(
+  traceContext: TraceContext | null,
+  instruction: string,
+  mode: ExecutionMode,
+  iterationCount: number,
+  maxRetries: number,
+  currentVariables: Record<string, unknown>
+): void {
+  log.infoWithTrace(traceContext!, '[CODEACT] Input context', {
+    instruction,
+    mode,
+    iteration: iterationCount,
+    maxRetries,
+    variableCount: Object.keys(currentVariables).length,
+    variableNames: Object.keys(currentVariables),
+  });
+}
+
+/**
+ * Retry loop configuration
+ */
+interface RetryLoopParams {
+  execContext: ExecutionContext;
+  state: AgentState;
+  instruction: string;
+  maxRetries: number;
+  currentVariables: Record<string, unknown>;
+  currentVariableSummary: VariableSummary[];
+  timer: ReturnType<typeof startTimer>;
+}
+
+/**
+ * Run the retry loop for code execution with self-repair
+ */
+async function runRetryLoop(params: RetryLoopParams): Promise<Partial<AgentState>> {
+  const { execContext, state, instruction, maxRetries, timer } = params;
+  let { currentVariables, currentVariableSummary } = params;
+  
     let previousAttempt: PreviousAttempt | undefined;
     let lastCode = '';
     let lastError = '';
     let lastExecResult: CodeResult | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
+    const attemptResult = await runSingleAttempt({
+      execContext,
+      state,
+      instruction,
+      attempt,
+      maxRetries,
+      previousAttempt,
+      currentVariables,
+      currentVariableSummary,
+      timer,
+    });
+
+    // Handle different attempt outcomes
+    if (attemptResult.type === 'success') {
+      return attemptResult.stateUpdate;
+    }
+    
+    if (attemptResult.type === 'fatal_error') {
+      return attemptResult.stateUpdate;
+    }
+
+    // Execution failed - prepare for retry
+    lastCode = attemptResult.code;
+    lastError = attemptResult.error;
+    lastExecResult = attemptResult.execResult;
+    previousAttempt = attemptResult.previousAttempt;
+    
+    // Update variables if modified during failed attempt
+    if (attemptResult.updatedVariables) {
+      currentVariables = attemptResult.updatedVariables;
+      currentVariableSummary = buildVariableSummary(currentVariables);
+    }
+  }
+
+  // All retries exhausted
+  return buildAllRetriesFailedResult({
+    state,
+    instruction,
+    lastCode,
+    lastError,
+    lastExecResult,
+    maxRetries,
+    currentVariables,
+    currentVariableSummary,
+    timer,
+    traceContext: execContext.traceContext,
+  });
+}
+
+/**
+ * Result from a single execution attempt
+ */
+type AttemptResult = 
+  | { type: 'success'; stateUpdate: Partial<AgentState> }
+  | { type: 'fatal_error'; stateUpdate: Partial<AgentState> }
+  | { 
+      type: 'retry'; 
+      code: string; 
+      error: string; 
+      execResult: CodeResult;
+      previousAttempt: PreviousAttempt;
+      updatedVariables?: Record<string, unknown>;
+    };
+
+/**
+ * Single attempt parameters
+ */
+interface SingleAttemptParams {
+  execContext: ExecutionContext;
+  state: AgentState;
+  instruction: string;
+  attempt: number;
+  maxRetries: number;
+  previousAttempt: PreviousAttempt | undefined;
+  currentVariables: Record<string, unknown>;
+  currentVariableSummary: VariableSummary[];
+  timer: ReturnType<typeof startTimer>;
+}
+
+/**
+ * Run a single execution attempt (LLM call + code execution)
+ */
+async function runSingleAttempt(params: SingleAttemptParams): Promise<AttemptResult> {
+  const { 
+    execContext, state, instruction, attempt, maxRetries,
+    previousAttempt, currentVariables, currentVariableSummary, timer 
+  } = params;
+  const { traceContext, llm, llmModel, mode, systemPrompt, browserAdapter, timeout } = execContext;
+
+  try {
+    logAttemptStart(traceContext, attempt, maxRetries, previousAttempt);
+
+    // Generate code via LLM
+    const decision = await generateCode({
+      llm,
+      llmModel,
+      mode,
+      systemPrompt,
+      instruction,
+      previousAttempt,
+      currentVariableSummary,
+      attempt,
+      traceContext,
+    });
+
+    if (!decision) {
+      return {
+        type: 'fatal_error',
+        stateUpdate: {
+          status: 'error',
+          error: 'Failed to parse CodeAct response',
+          consecutiveFailures: state.consecutiveFailures + 1,
+        },
+      };
+    }
+
+    // Execute the generated code
+    const { execResult, duration } = await executeAndLogCode({
+      browserAdapter,
+      code: decision.code,
+      timeout,
+      currentVariables,
+      attempt,
+      traceContext,
+    });
+
+    if (execResult.success) {
+      return buildSuccessResult({
+        state,
+        instruction,
+        decision,
+        execResult,
+        duration,
+        currentVariables,
+        attempt,
+        timer,
+        traceContext,
+      });
+    }
+
+    // Execution failed - return retry info
+    return buildRetryResult({
+      decision,
+      execResult,
+      attempt,
+      maxRetries,
+      traceContext,
+    });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    log.errorWithTrace(traceContext!, '[CODEACT] Unexpected error in attempt', { attempt, error: errorMessage });
+    
+    return {
+      type: 'fatal_error',
+      stateUpdate: {
+        status: 'error',
+        error: `CodeAct failed: ${errorMessage}`,
+        consecutiveFailures: state.consecutiveFailures + 1,
+      },
+    };
+  }
+}
+
+/**
+ * Log attempt start
+ */
+function logAttemptStart(
+  traceContext: TraceContext | null,
+  attempt: number,
+  maxRetries: number,
+  previousAttempt: PreviousAttempt | undefined
+): void {
         log.infoWithTrace(traceContext!, '[CODEACT] Attempt', {
           attempt,
           maxRetries,
           isRetry: attempt > 1,
           previousError: previousAttempt?.error,
         });
+}
 
-        // Build user message (with previous attempt info if retrying)
+/**
+ * Generate code via LLM
+ */
+async function generateCode(params: {
+  llm: ChatAnthropic;
+  llmModel: string;
+  mode: ExecutionMode;
+  systemPrompt: string;
+  instruction: string;
+  previousAttempt: PreviousAttempt | undefined;
+  currentVariableSummary: VariableSummary[];
+  attempt: number;
+  traceContext: TraceContext | null;
+}): Promise<{ code: string; thought: string } | null> {
+  const { 
+    llm, llmModel, mode, systemPrompt, instruction, 
+    previousAttempt, currentVariableSummary, attempt, traceContext 
+  } = params;
+
         const userMessage = buildCodeActUserMessage({
           instruction,
           mode,
           previousAttempt,
+    availableVariables: currentVariableSummary,
         });
 
-        // Call LLM
         const messages = [
           new SystemMessage(systemPrompt),
           new HumanMessage(userMessage),
         ];
 
-        // Log complete LLM prompt for debugging
-        log.infoWithTrace(traceContext!, '[CODEACT] === LLM Request ===', {
-          attempt,
-          model: llmConfig.model,
-          mode,
-          systemPromptLength: systemPrompt.length,
-          userMessageLength: userMessage.length,
-        });
-
-        // Debug: Print complete messages for troubleshooting
-        log.debugWithTrace(traceContext!, '[CODEACT] Complete LLM Messages', {
-          attempt,
-          messageCount: messages.length,
-          messages: messages.map((m, i) => ({
-            index: i,
-            role: m._getType(),
-            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          })),
-        });
+  log.infoWithTrace(traceContext!, '[CODEACT] === LLM Request ===', {
+    attempt,
+    model: llmModel,
+    mode,
+    systemPromptLength: systemPrompt.length,
+    userMessageLength: userMessage.length,
+  });
 
         const llmStartTime = Date.now();
-        const response = await llm!.invoke(messages);
+  const response = await llm.invoke(messages);
         const llmDuration = Date.now() - llmStartTime;
 
         const responseText = typeof response.content === 'string'
@@ -182,23 +447,14 @@ export function createCodeActNode(
           responsePreview: responseText.slice(0, 300) + (responseText.length > 300 ? '...' : ''),
         });
 
-        // Parse response
         const decision = parseCodeActResponse(responseText);
-
         if (!decision) {
           log.errorWithTrace(traceContext!, '[CODEACT] Failed to parse response', {
             attempt,
             responseText: responseText.slice(0, 500),
           });
-          // Don't retry parse failures, just fail
-          return {
-            status: 'error',
-            error: 'Failed to parse CodeAct response',
-            consecutiveFailures: state.consecutiveFailures + 1,
-          };
-        }
-
-        lastCode = decision.code;
+    return null;
+  }
 
         log.infoWithTrace(traceContext!, '[CODEACT] Code generated', { 
           attempt,
@@ -207,19 +463,27 @@ export function createCodeActNode(
           codePreview: decision.code.slice(0, 300) + (decision.code.length > 300 ? '...' : ''),
         });
 
-        log.debugWithTrace(traceContext!, '[CODEACT] Full generated code', {
-          attempt,
-          code: decision.code,
-        });
+  return decision;
+}
 
-        // Execute the code
+/**
+ * Execute code and log results
+ */
+async function executeAndLogCode(params: {
+  browserAdapter: IBrowserAdapter;
+  code: string;
+  timeout: number;
+  currentVariables: Record<string, unknown>;
+  attempt: number;
+  traceContext: TraceContext | null;
+}): Promise<{ execResult: CodeResult; duration: number }> {
+  const { browserAdapter, code, timeout, currentVariables, attempt, traceContext } = params;
+
         const execStartTime = Date.now();
-        const execResult = await executeCode(browserAdapter, decision.code, timeout);
-        const execDuration = Date.now() - execStartTime;
+  const execResult = await executeCode(browserAdapter, code, timeout, currentVariables);
+  const duration = Date.now() - execStartTime;
 
-        lastExecResult = execResult;
-
-        // Format output data for logging (truncate if too long)
+  // Format output preview for logging
         let outputPreview: string | undefined;
         if (execResult.output !== undefined) {
           try {
@@ -237,7 +501,7 @@ export function createCodeActNode(
         log.infoWithTrace(traceContext!, '[CODEACT] Execution result', {
           attempt,
           success: execResult.success,
-          duration: execDuration,
+    duration,
           error: execResult.error,
           stackTrace: execResult.stackTrace?.slice(0, 200),
           errorType: execResult.errorType,
@@ -245,16 +509,37 @@ export function createCodeActNode(
           outputPreview,
         });
 
-        // Success! Return the result
-        if (execResult.success) {
+  return { execResult, duration };
+}
+
+/**
+ * Build success result
+ */
+function buildSuccessResult(params: {
+  state: AgentState;
+  instruction: string;
+  decision: { code: string; thought: string };
+  execResult: CodeResult;
+  duration: number;
+  currentVariables: Record<string, unknown>;
+  attempt: number;
+  timer: ReturnType<typeof startTimer>;
+  traceContext: TraceContext | null;
+}): AttemptResult {
+  const { state, instruction, decision, execResult, duration, currentVariables, attempt, timer, traceContext } = params;
+
+  const updatedVariables = execResult.updatedVariables || currentVariables;
+  const updatedVariableSummary = buildVariableSummary(updatedVariables);
+
           log.infoWithTrace(traceContext!, '[CODEACT] Success after attempts', {
             totalAttempts: attempt,
+    updatedVariableCount: Object.keys(updatedVariables).length,
+    newVariables: Object.keys(updatedVariables).filter(
+      k => !Object.keys(state.executionVariables || {}).includes(k)
+    ),
           });
 
-          const action = createActionRecord(
-            instruction, decision.code, decision.thought, execResult, execDuration
-          );
-
+  const action = createActionRecord(instruction, decision.code, decision.thought, execResult, duration);
           timer.end(`Code executed successfully (attempt ${attempt})`);
 
           const newObservation = buildNewObservation(state, execResult);
@@ -267,52 +552,87 @@ export function createCodeActNode(
           });
 
           return {
+    type: 'success',
+    stateUpdate: {
             status: 'acting',
             observation: newObservation,
             actionHistory: [action],
             consecutiveFailures: 0,
             iterationCount: state.iterationCount + 1,
-          };
-        }
+      executionVariables: updatedVariables,
+      variableSummary: updatedVariableSummary,
+    },
+  };
+}
 
-        // Execution failed - prepare for retry
-        lastError = execResult.error || 'Unknown error';
+/**
+ * Build retry result for failed execution
+ */
+function buildRetryResult(params: {
+  decision: { code: string; thought: string };
+  execResult: CodeResult;
+  attempt: number;
+  maxRetries: number;
+  traceContext: TraceContext | null;
+}): AttemptResult {
+  const { decision, execResult, attempt, maxRetries, traceContext } = params;
+
+  const error = execResult.error || 'Unknown error';
+
+  // Log variable updates from failed attempt
+  if (execResult.updatedVariables) {
+    log.debugWithTrace(traceContext!, '[CODEACT] Variables updated from failed attempt', {
+      attempt,
+      variableCount: Object.keys(execResult.updatedVariables).length,
+      variableNames: Object.keys(execResult.updatedVariables),
+    });
+  }
         
         log.warnWithTrace(traceContext!, '[CODEACT] Execution failed, preparing retry', {
           attempt,
           remainingAttempts: maxRetries - attempt,
-          error: lastError,
+    error,
           errorType: execResult.errorType,
           errorLine: execResult.errorLine,
         });
 
-        // Build previous attempt info for next iteration
-        previousAttempt = {
+  return {
+    type: 'retry',
+    code: decision.code,
+    error,
+    execResult,
+    previousAttempt: {
           code: decision.code,
-          error: lastError,
+      error,
           stackTrace: execResult.stackTrace,
           errorType: execResult.errorType,
           errorLine: execResult.errorLine,
           logs: execResult.logs,
-        };
+    },
+    updatedVariables: execResult.updatedVariables,
+  };
+}
 
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        log.errorWithTrace(traceContext!, '[CODEACT] Unexpected error in attempt', { 
-          attempt,
-          error: errorMessage,
-        });
-        
-        // For unexpected errors (like LLM API errors), don't retry
-        return {
-          status: 'error',
-          error: `CodeAct failed: ${errorMessage}`,
-          consecutiveFailures: state.consecutiveFailures + 1,
-        };
-      }
-    }
+/**
+ * Build result when all retries are exhausted
+ */
+function buildAllRetriesFailedResult(params: {
+  state: AgentState;
+  instruction: string;
+  lastCode: string;
+  lastError: string;
+  lastExecResult: CodeResult | undefined;
+  maxRetries: number;
+  currentVariables: Record<string, unknown>;
+  currentVariableSummary: VariableSummary[];
+  timer: ReturnType<typeof startTimer>;
+  traceContext: TraceContext | null;
+}): Partial<AgentState> {
+  const { 
+    state, instruction, lastCode, lastError, lastExecResult,
+    maxRetries, currentVariables, currentVariableSummary, timer, traceContext 
+  } = params;
 
-    // All retries exhausted
     log.errorWithTrace(traceContext!, '[CODEACT] All retries failed', {
       totalAttempts: maxRetries,
       lastError,
@@ -320,7 +640,6 @@ export function createCodeActNode(
 
     timer.end(`All ${maxRetries} attempts failed`);
 
-    // Create action record for the last failed attempt
     const action = createActionRecord(
       instruction, 
       lastCode, 
@@ -335,139 +654,7 @@ export function createCodeActNode(
       actionHistory: [action],
       consecutiveFailures: state.consecutiveFailures + 1,
       iterationCount: state.iterationCount + 1,
-    };
+    executionVariables: currentVariables,
+    variableSummary: currentVariableSummary,
   };
-}
-
-/**
- * Create an action record
- */
-function createActionRecord(
-  instruction: string,
-  code: string,
-  thought: string,
-  execResult: CodeResult,
-  duration: number
-) {
-  return {
-    id: generateId('action'),
-    tool: 'codeact',
-    args: { instruction, code },
-    thought,
-    reasoning: instruction,
-    timestamp: new Date().toISOString(),
-    result: {
-      success: execResult.success,
-      data: execResult.output,
-      error: execResult.error,
-      duration,
-    },
-  };
-}
-
-/**
- * Build new observation from execution result
- */
-function buildNewObservation(state: AgentState, execResult: CodeResult) {
-  return {
-    ...state.observation!,
-    url: execResult.url || state.observation?.url || '',
-    title: execResult.title || state.observation?.title || '',
-    timestamp: new Date().toISOString(),
-    lastActionResult: {
-      tool: 'codeact',
-      success: execResult.success,
-      data: execResult.output,
-      error: execResult.error,
-    },
-  };
-}
-
-/**
- * Execute Playwright code via browser adapter
- */
-async function executeCode(
-  browserAdapter: IBrowserAdapter,
-  code: string,
-  timeout: number
-): Promise<CodeResult> {
-  try {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Code execution timeout')), timeout);
-    });
-
-    const execPromise = browserAdapter.runCode(code);
-    const result: CodeExecutionResult = await Promise.race([execPromise, timeoutPromise]);
-
-    if (!result.success) {
-      return {
-        success: false,
-        error: result.error || 'Code execution failed',
-        observation: `执行失败: ${result.error}`,
-        // Enhanced debugging info
-        stackTrace: result.stackTrace,
-        errorType: result.errorType,
-        errorLine: result.errorLine,
-        logs: result.logs,
-        url: result.pageUrl,
-        title: result.pageTitle,
-      };
-    }
-
-    // Extract URL and title from result if available
-    const output = result.result as Record<string, unknown> | undefined;
-    
-    return {
-      success: true,
-      output: result.result,
-      observation: summarizeResult(result.result),
-      url: typeof output?.url === 'string' ? output.url : result.pageUrl,
-      title: typeof output?.title === 'string' ? output.title : result.pageTitle,
-      logs: result.logs,
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    const stackTrace = error instanceof Error ? error.stack : undefined;
-    
-    return {
-      success: false,
-      error: errorMessage,
-      observation: `执行错误: ${errorMessage}`,
-      stackTrace,
-      errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
-    };
-  }
-}
-
-/**
- * Summarize execution result for Planner
- */
-function summarizeResult(result: unknown): string {
-  if (result === null || result === undefined) {
-    return '操作完成';
-  }
-
-  if (typeof result === 'object') {
-    const obj = result as Record<string, unknown>;
-    
-    if ('success' in obj) {
-      if (obj.success) {
-        if (obj.url) {
-          return `成功 - 当前页面: ${obj.url}`;
-        }
-        if (obj.title) {
-          return `成功 - 页面标题: ${obj.title}`;
-        }
-        return '操作成功';
-      } else {
-        return `失败: ${obj.error || '未知错误'}`;
-      }
-    }
-
-    const keys = Object.keys(obj).slice(0, 3);
-    const summary = keys.map(k => `${k}: ${String(obj[k]).slice(0, 50)}`).join(', ');
-    return summary || '操作完成';
-  }
-
-  return String(result).slice(0, 200);
 }

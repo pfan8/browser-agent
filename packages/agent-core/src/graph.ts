@@ -697,6 +697,13 @@ export class BrowserAgent {
         // Memory context
         memoryContext,
         threadId: this.currentThreadId,
+        // CodeAct execution variables - persist across code executions
+        executionVariables: continueSession 
+          ? (previousState?.executionVariables || {}) 
+          : {},
+        variableSummary: continueSession 
+          ? (previousState?.variableSummary || []) 
+          : [],
       };
 
       const graphConfig = this.getGraphConfig(
@@ -761,6 +768,10 @@ export class BrowserAgent {
           executionMode: this.config.executionMode,
           memoryContext: null,
           threadId: this.currentThreadId,
+          conversationSummary: null,
+          summaryMessageCount: 0,
+          executionVariables: {},
+          variableSummary: [],
         };
       }
       const duration = Date.now() - startTime;
@@ -880,6 +891,13 @@ export class BrowserAgent {
         // Memory context
         memoryContext,
         threadId: this.currentThreadId,
+        // CodeAct execution variables - persist across code executions
+        executionVariables: continueSession 
+          ? (previousState?.executionVariables || {}) 
+          : {},
+        variableSummary: continueSession 
+          ? (previousState?.variableSummary || []) 
+          : [],
       };
 
       const graphConfig = this.getGraphConfig(

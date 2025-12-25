@@ -35,6 +35,9 @@ export interface CodeResult {
   errorType?: string;      // Error type (SyntaxError, TimeoutError, etc.)
   errorLine?: number;      // Line number where error occurred
   logs?: string[];         // Console logs during execution
+  
+  // CodeAct state management - updated variables after execution
+  updatedVariables?: Record<string, unknown>;
 }
 
 /**
