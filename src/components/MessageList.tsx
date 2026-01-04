@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import type { ChatMessage, ExecutionStep } from '@dsl/types';
 
 interface CheckpointInfo {
@@ -344,6 +345,7 @@ function extractMessage(content: string): string {
   return content;
 }
 
+
 export default function MessageList({ messages, isProcessing, checkpoints = [], onEditAndResend, onExampleClick }: MessageListProps) {
   // Track which message is being edited (by message id)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -475,7 +477,7 @@ export default function MessageList({ messages, isProcessing, checkpoints = [], 
                 />
               ) : (
                 <div className="message-text">
-                  <Markdown remarkPlugins={[remarkGfm]}>{extractMessage(message.content)}</Markdown>
+                  <Markdown remarkPlugins={[remarkGfm, remarkBreaks]}>{extractMessage(message.content)}</Markdown>
                 </div>
               )}
               <div className="message-footer">

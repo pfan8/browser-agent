@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, KeyboardEvent } from 'react';
+import { useState, useCallback, useRef, KeyboardEvent, useEffect } from 'react';
 
 interface CommandInputProps {
   onSend: (message: string) => void;
@@ -20,11 +20,22 @@ export default function CommandInput({
   onValueChange,
 }: CommandInputProps) {
   const [internalInput, setInternalInput] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   
   // Support both controlled and uncontrolled modes
   const input = value !== undefined ? value : internalInput;
   const setInput = onValueChange || setInternalInput;
+
+  // 自动调整 textarea 高度
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      const scrollHeight = textarea.scrollHeight;
+      // 限制最大高度为 150px（约 6 行）
+      textarea.style.height = `${Math.min(scrollHeight, 150)}px`;
+    }
+  }, [input]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -32,15 +43,20 @@ export default function CommandInput({
 
     onSend(trimmed);
     setInput('');
+    // 重置 textarea 高度
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
   }, [input, disabled, onSend, setInput]);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     // 检查是否正在使用输入法（IME）进行输入
     // 如果是，则不发送消息，让输入法完成拼音到汉字的转换
     if (e.nativeEvent.isComposing || e.key === 'Process') {
       return;
     }
     
+    // Shift+Enter 换行，Enter 提交
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -56,18 +72,18 @@ export default function CommandInput({
   return (
     <div className="command-input-container">
       <div className="command-input-wrapper">
-        <input
-          ref={inputRef}
-          type="text"
+        <textarea
+          ref={textareaRef}
           className="command-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={isConnected 
-            ? "描述您想要执行的操作..." 
+            ? "描述您想要执行的操作... (Shift+Enter 换行)" 
             : "请先连接浏览器..."
           }
           disabled={disabled}
+          rows={1}
         />
         
         {isRunning ? (

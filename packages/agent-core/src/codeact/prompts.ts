@@ -253,6 +253,18 @@ Execute Playwright code to interact with the browser.
 - Return { success: boolean, ...data } from your code
 - Prefer text-based selectors: \`*:has-text("text")\`
 
+**IMPORTANT - Timeout Handling:**
+- Most single operations should complete in <1s
+- When iterating over multiple pages/elements, use Promise.race with timeout:
+\`\`\`javascript
+const result = await Promise.race([
+  page.title(),
+  new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1000))
+]).catch(() => 'fallback');
+\`\`\`
+- Or use Playwright's built-in timeout: \`page.click(selector, { timeout: 5000 })\`
+- Always handle potential timeouts to avoid blocking the entire execution
+
 ### 2. summarizeResult
 Summarize a large result object for clearer understanding.
 \`\`\`json

@@ -177,11 +177,150 @@
       font-size: 11px;
     }
 
+    /* Help Icon & Tooltip */
+    .help-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 50%;
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: help;
+      position: relative;
+      transition: all 0.2s;
+    }
+
+    .help-icon:hover {
+      background: var(--bg-secondary);
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    .help-tooltip {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      width: 340px;
+      padding: 16px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-8px);
+      transition: all 0.2s;
+      text-align: left;
+      font-weight: normal;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .help-icon:hover .help-tooltip {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .help-tooltip h4 {
+      color: var(--accent-cyan);
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+
+    .help-tooltip ol {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--text-secondary);
+    }
+
+    .help-tooltip li {
+      margin-bottom: 8px;
+    }
+
+    .help-tooltip code {
+      background: var(--bg-primary);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--accent-orange);
+    }
+
+    .help-tooltip .shortcut {
+      display: inline-block;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--text-primary);
+    }
+
+    /* Path Hint Section */
+    .path-hint {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 12px 24px;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-color);
+      font-size: 12px;
+      flex-wrap: wrap;
+    }
+
+    .path-hint-label {
+      color: var(--text-muted);
+    }
+
+    .path-hint-path {
+      background: var(--bg-primary);
+      padding: 4px 10px;
+      border-radius: 4px;
+      color: var(--accent-cyan);
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      transition: all 0.2s;
+    }
+
+    .path-hint-path:hover {
+      background: var(--bg-secondary);
+    }
+
+    .path-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      transition: all 0.2s;
+    }
+
+    .path-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    .path-btn.copied {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+
     /* Main Layout */
     .main {
       display: grid;
       grid-template-columns: 380px 1fr;
-      height: calc(100vh - 65px);
+      height: calc(100vh - 110px);
     }
 
     /* Trace List */
@@ -733,6 +872,27 @@
       </button>
       <span class="last-refresh" id="lastRefresh"></span>
     </div>
+    <div class="help-icon">
+      ?
+      <div class="help-tooltip">
+        <h4>📖 如何加载日志文件</h4>
+        <ol>
+          <li>点击下方 <code>复制路径</code> 按钮复制日志目录</li>
+          <li>点击 <code>Open Log File</code> 按钮</li>
+          <li>在文件选择器中按 <span class="shortcut">⌘</span> + <span class="shortcut">⇧</span> + <span class="shortcut">G</span></li>
+          <li>粘贴路径并按回车跳转到目录</li>
+          <li>选择日期最新的 <code>agent-YYYY-MM-DD.log</code> 文件</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <div class="path-hint">
+    <span class="path-hint-label">💡 日志目录:</span>
+    <code class="path-hint-path" id="logsPath" title="点击复制路径">logs/</code>
+    <button class="path-btn" id="copyPathBtn">📋 复制路径</button>
+    <button class="path-btn" id="openFinderBtn">📂 在Finder中打开</button>
+    <span class="path-hint-label" style="color: var(--accent-orange);">提示: 选择日期最新的日志文件</span>
   </div>
 
   <div class="main">
@@ -768,6 +928,74 @@
     let currentFile = null;
     let lastRefreshTime = null;
     let eventDataStore = {}; // Store raw event data for beautify feature
+
+    // ============================================
+    // Logs Path Configuration
+    // ============================================
+    // Default path - users should update this based on their project location
+    const LOGS_PATH = 'logs/';
+    
+    // Try to detect the full path from the current URL
+    function getFullLogsPath() {
+      try {
+        const currentUrl = window.location.href;
+        if (currentUrl.startsWith('file://')) {
+          // Extract the directory path from the current file URL
+          const pathMatch = currentUrl.match(/file:\/\/(.*?)\/tools\/trace-viewer\.html/);
+          if (pathMatch) {
+            return pathMatch[1] + '/logs/';
+          }
+        }
+      } catch (e) {
+        console.log('Could not detect full path:', e);
+      }
+      return LOGS_PATH;
+    }
+
+    // Initialize path display
+    document.addEventListener('DOMContentLoaded', () => {
+      const fullPath = getFullLogsPath();
+      const logsPathEl = document.getElementById('logsPath');
+      if (logsPathEl) {
+        logsPathEl.textContent = fullPath;
+        logsPathEl.title = '点击复制路径';
+      }
+    });
+
+    // Copy path button handler
+    document.getElementById('copyPathBtn').addEventListener('click', async () => {
+      const fullPath = getFullLogsPath();
+      try {
+        await navigator.clipboard.writeText(fullPath);
+        const btn = document.getElementById('copyPathBtn');
+        const originalText = btn.textContent;
+        btn.textContent = '✓ 已复制';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.classList.remove('copied');
+        }, 2000);
+      } catch (e) {
+        prompt('复制以下路径:', fullPath);
+      }
+    });
+
+    // Click on path to copy
+    document.getElementById('logsPath').addEventListener('click', () => {
+      document.getElementById('copyPathBtn').click();
+    });
+
+    // Open in Finder button handler
+    document.getElementById('openFinderBtn').addEventListener('click', async () => {
+      const fullPath = getFullLogsPath();
+      const cmd = `open "${fullPath}"`;
+      try {
+        await navigator.clipboard.writeText(cmd);
+        alert('终端命令已复制！\n\n请在终端中粘贴运行:\n' + cmd + '\n\n或在Finder中按 Cmd+Shift+G 并粘贴路径');
+      } catch (e) {
+        prompt('请复制此命令到终端运行:', cmd);
+      }
+    });
 
     // ============================================
     // Log Parser

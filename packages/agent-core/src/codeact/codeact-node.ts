@@ -328,17 +328,35 @@ async function actStep(
         }
 
         case 'summarizeResult': {
-            const data = toolCall.args.data;
+            let data = toolCall.args.data;
+
+            // Resolve variable references like "state.tabInfo"
+            if (typeof data === 'string' && data.startsWith('state.')) {
+                const varName = data.replace('state.', '');
+                if (varName in ctx.variables) {
+                    data = ctx.variables[varName];
+                } else {
+                    return {
+                        success: false,
+                        error: `Variable "${varName}" not found in state`,
+                        summary: `Error: Variable "state.${varName}" does not exist. Available: ${
+                            Object.keys(ctx.variables).join(', ') || 'none'
+                        }`,
+                    };
+                }
+            }
+
             return summarizeResultTool({ data });
         }
 
         case 'fetchData': {
             const target = (toolCall.args.target as string) || 'all';
             const name = toolCall.args.name as string | undefined;
-            return fetchData(
+            const fetchResult = fetchData(
                 { target: target as 'all' | 'keys' | 'single', name },
                 ctx.variables
             );
+            return fetchResult;
         }
 
         default:
@@ -372,8 +390,34 @@ function buildFinishResult(
 
     timer.end(`ReAct completed in ${iteration} iterations`);
 
+    // Get actual data from last successful runCode or from variables
+    // Priority: last runCode result > largest array in variables > result string
+    let actualData: unknown = toolCall.args.result;
+
+    // Check if there's a runCode with actual data
+    const lastRunCode = toolHistory.find(
+        (h) => h.tool === 'runCode' && h.result.success
+    );
+    if (lastRunCode?.result?.data) {
+        actualData = lastRunCode.result.data;
+    }
+
+    // Check variables for arrays (like tabInfo)
+    const varKeys = Object.keys(variables);
+    for (const key of varKeys) {
+        const value = variables[key];
+        if (Array.isArray(value) && value.length > 0) {
+            // Prefer larger arrays or structured data
+            if (
+                !Array.isArray(actualData) ||
+                value.length > (actualData as unknown[]).length
+            ) {
+                actualData = value;
+            }
+        }
+    }
+
     // Create action record for the overall task
-    const lastRunCode = toolHistory.find((h) => h.tool === 'runCode');
     const action = createActionRecord(
         instruction,
         lastRunCode ? (lastRunCode.args as { code: string }).code : '',
@@ -381,7 +425,7 @@ function buildFinishResult(
         {
             success: true,
             observation: result,
-            output: toolCall.args.result,
+            output: actualData,
         },
         0
     );
@@ -444,6 +488,11 @@ function buildMaxIterationsResult(
 
     timer.end(`Max iterations (${config.maxReactIterations}) reached`);
 
+    // Check if last tool succeeded - treat as partial success
+    const lastTool = toolHistory[toolHistory.length - 1];
+    const lastToolSucceeded = lastTool?.result?.success === true;
+    const hasUsableData = lastToolSucceeded && !!lastTool?.result?.data;
+
     // Create summary of what was accomplished
     const summary = toolHistory
         .map(
@@ -454,6 +503,36 @@ function buildMaxIterationsResult(
         )
         .join('\n');
 
+    // If last tool succeeded with data, treat as partial success
+    if (hasUsableData) {
+        const resultSummary = `Task data retrieved. ${lastTool.result.summary.slice(
+            0,
+            200
+        )}`;
+
+        const action = createActionRecord(
+            instruction,
+            '',
+            `Completed with data. Tools executed:\n${summary}`,
+            {
+                success: true,
+                observation: resultSummary,
+                output: lastTool.result.data,
+            },
+            0
+        );
+
+        return {
+            status: 'acting',
+            actionHistory: [action],
+            consecutiveFailures: 0,
+            iterationCount: state.iterationCount + 1,
+            executionVariables: variables,
+            variableSummary: buildVariableSummary(variables),
+        };
+    }
+
+    // Otherwise, treat as error
     const action = createActionRecord(
         instruction,
         '',

@@ -1589,6 +1589,7 @@ body {
   display: flex;
   gap: var(--spacing-sm);
   position: relative;
+  align-items: flex-end;
 }
 
 .command-input {
@@ -1601,6 +1602,12 @@ body {
   font-family: var(--font-mono);
   font-size: 0.95rem;
   transition: all var(--transition-fast);
+  /* textarea 特有样式 */
+  resize: none;
+  min-height: 42px;
+  max-height: 150px;
+  line-height: 1.5;
+  overflow-y: auto;
 }
 
 .command-input:focus {

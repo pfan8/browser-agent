@@ -63,7 +63,7 @@ function formatTabListMarkdown(
   
   const lines: string[] = [
     '',
-    `### 📑 全部 ${count} 个标签页`,
+    '---',
     '',
     '| # | 标题 | URL |',
     '|---|------|-----|',
@@ -87,7 +87,7 @@ function formatTabListMarkdown(
 function formatMenuItemsMarkdown(items: unknown[]): string {
   const lines: string[] = [
     '',
-    `### 📋 全部 ${items.length} 个菜单项`,
+    '---',
     '',
   ];
 
@@ -111,7 +111,7 @@ function formatMenuItemsMarkdown(items: unknown[]): string {
 function formatArrayMarkdown(arr: unknown[]): string {
   const lines: string[] = [
     '',
-    `### 📃 全部 ${arr.length} 项`,
+    '---',
     '',
   ];
 
