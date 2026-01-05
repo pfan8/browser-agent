@@ -35,6 +35,7 @@ function App() {
     currentSessionId,
     checkpoints,
     currentPlan,
+    beadsPlan,
     progress,
     status: agentStatus,
     isRunning: isAgentRunning,
@@ -292,6 +293,7 @@ function App() {
             sessions={sessions}
             currentSessionId={currentSessionId}
             currentPlan={currentPlan}
+            beadsPlan={beadsPlan}
             progress={progress}
             status={agentStatus}
             isRunning={isAgentRunning}

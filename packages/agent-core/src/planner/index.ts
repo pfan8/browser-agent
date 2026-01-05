@@ -7,5 +7,6 @@
 export * from './types';
 export * from './prompts';
 export { createPlannerNode, type PlannerNodeConfig } from './planner-node';
+export { createBeadsPlannerNode, type BeadsPlannerNodeConfig } from './beads-planner-node';
 export { formatFullDataAsMarkdown } from './summarize';
 

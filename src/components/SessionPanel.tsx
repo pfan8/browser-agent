@@ -6,6 +6,8 @@
  */
 
 import { useState, useCallback } from 'react';
+import { BeadsPlanView } from './BeadsPlanView';
+import type { BeadsPlanUI } from '../types/beads';
 
 interface SessionInfo {
   id: string;
@@ -45,6 +47,7 @@ interface SessionPanelProps {
   sessions: SessionInfo[];
   currentSessionId: string | null;
   currentPlan: TaskPlan | null;
+  beadsPlan: BeadsPlanUI | null;
   progress: AgentProgress | null;
   status: string;
   isRunning: boolean;
@@ -59,6 +62,7 @@ export function SessionPanel({
   sessions,
   currentSessionId,
   currentPlan,
+  beadsPlan,
   progress,
   status,
   isRunning,
@@ -182,7 +186,11 @@ export function SessionPanel({
       <div className="tab-content">
         {activeTab === 'plan' && (
           <div className="plan-view">
-            {currentPlan ? (
+            {/* Beads Plan View (new architecture) */}
+            {beadsPlan ? (
+              <BeadsPlanView plan={beadsPlan} isRunning={isRunning} />
+            ) : currentPlan ? (
+              /* Legacy Plan View (fallback) */
               <>
                 <div className="plan-goal">
                   <strong>Goal:</strong> {currentPlan.goal}

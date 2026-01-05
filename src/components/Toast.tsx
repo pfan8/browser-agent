@@ -4,7 +4,7 @@
  * Lightweight toast notifications for session operations and other non-critical messages.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 
 export type ToastType = 'success' | 'error' | 'info';
 

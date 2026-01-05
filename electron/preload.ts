@@ -217,6 +217,11 @@ interface ElectronAPI {
     confirmAction: (confirmed: boolean, comment?: string) => void;
     cancelConfirmation: () => void;
     onConfirmationRequested: (callback: (request: unknown) => void) => () => void;
+
+    // Beads Task Management
+    getBeadsTasks: () => Promise<{ success: boolean; tasks: unknown[]; initialized?: boolean; error?: string }>;
+    getBeadsProgress: () => Promise<{ success: boolean; progress: { total: number; completed: number; ready: number; blocked: number; pending: number; failed: number; percentage: number } | null; initialized?: boolean; error?: string }>;
+    getBeadsPlan: () => Promise<{ success: boolean; plan: { epicId: string; epicTitle: string; tasks: unknown[]; completedCount: number; totalCount: number; percentage: number; status: string } | null; initialized?: boolean; error?: string }>;
   };
 }
 
@@ -396,6 +401,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('agent-confirmation-requested', handler);
       return () => ipcRenderer.removeListener('agent-confirmation-requested', handler);
     },
+
+    // Beads Task Management
+    getBeadsTasks: () => ipcRenderer.invoke('agent-get-beads-tasks'),
+    getBeadsProgress: () => ipcRenderer.invoke('agent-get-beads-progress'),
+    getBeadsPlan: () => ipcRenderer.invoke('agent-get-beads-plan'),
   },
 };
 

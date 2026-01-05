@@ -44,11 +44,15 @@ interface ConversationMessage {
 
 interface CheckpointInfo {
   id: string;
-  name: string;
-  description?: string;
-  stepIndex: number;
+  threadId: string;
   createdAt: string;
-  isAutoSave: boolean;
+  step: number;
+  messagePreview?: string;
+  isUserMessage: boolean;
+  parentCheckpointId?: string;
+  // Legacy fields for backward compatibility
+  name?: string;
+  description?: string;
 }
 
 interface AgentConfig {
@@ -79,6 +83,14 @@ interface AgentState {
   checkpoints: CheckpointInfo[];
   createdAt: string;
   updatedAt: string;
+}
+
+interface CheckpointState {
+  messages: ConversationMessage[];
+  goal?: string;
+  status?: string;
+  isComplete?: boolean;
+  actionHistory?: unknown[];
 }
 
 // Context info for UI display
@@ -147,11 +159,13 @@ interface Window {
       deleteSession: (sessionId: string) => Promise<boolean>
       getCurrentSession: () => Promise<string | null>
       
-      // Checkpoints
+      // Checkpoints (LangGraph Native)
       createCheckpoint: (name: string, description?: string) => Promise<{ success: boolean; checkpointId?: string; error?: string }>
-      listCheckpoints: () => Promise<CheckpointInfo[]>
-      restoreCheckpoint: (checkpointId: string) => Promise<{ success: boolean; error?: string }>
-      restoreLatest: () => Promise<{ success: boolean; error?: string }>
+      listCheckpoints: (threadId?: string) => Promise<CheckpointInfo[]>
+      getCheckpointHistory: (threadId: string) => Promise<CheckpointInfo[]>
+      restoreCheckpoint: (threadId: string, checkpointId: string) => Promise<{ success: boolean; state?: CheckpointState; error?: string }>
+      getStateAtCheckpoint: (threadId: string, checkpointId: string) => Promise<CheckpointState | null>
+      restoreLatest: (threadId?: string) => Promise<{ success: boolean; state?: CheckpointState | null; error?: string }>
       deleteCheckpoint: (checkpointId: string) => Promise<boolean>
       
       // Memory & History
@@ -194,6 +208,11 @@ interface Window {
       confirmAction: (confirmed: boolean, comment?: string) => void
       cancelConfirmation: () => void
       onConfirmationRequested: (callback: (request: unknown) => void) => () => void
+      
+      // Beads Task Management
+      getBeadsTasks?: () => Promise<{ success: boolean; tasks: unknown[]; initialized?: boolean; error?: string }>
+      getBeadsProgress?: () => Promise<{ success: boolean; progress: { total: number; completed: number; ready: number; blocked: number; pending: number; failed: number; percentage: number } | null; initialized?: boolean; error?: string }>
+      getBeadsPlan?: () => Promise<{ success: boolean; plan: { epicId: string; epicTitle: string; tasks: unknown[]; completedCount: number; totalCount: number; percentage: number; status: string } | null; initialized?: boolean; error?: string }>
     }
   }
 }

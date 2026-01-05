@@ -1,0 +1,270 @@
+/**
+ * Beads Plan View Styles
+ *
+ * Styles for the BeadsPlanView component.
+ */
+
+.beads-plan-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.beads-plan-view.empty {
+    justify-content: center;
+    align-items: center;
+    min-height: 200px;
+}
+
+.empty-state {
+    text-align: center;
+    color: var(--text-secondary, #a0a0c0);
+}
+
+.empty-state .hint {
+    font-size: 11px;
+    margin-top: 8px;
+    opacity: 0.7;
+}
+
+/* Epic Header */
+.beads-epic-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--bg-tertiary, #0f0f1a);
+    border-radius: 8px;
+    border-left: 3px solid #8b5cf6;
+}
+
+.beads-epic-header.completed {
+    border-left-color: #22c55e;
+}
+
+.beads-epic-header.failed {
+    border-left-color: #ef4444;
+}
+
+.epic-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary, #e0e0f0);
+    font-weight: 600;
+}
+
+.epic-icon {
+    font-size: 16px;
+}
+
+.epic-count {
+    font-size: 12px;
+    color: var(--text-secondary, #a0a0c0);
+    background: var(--bg-secondary, #1a1a2e);
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+/* Progress */
+.beads-progress {
+    padding: 8px 0;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.progress-label {
+    color: var(--text-secondary, #a0a0c0);
+}
+
+.progress-value {
+    color: var(--text-primary, #e0e0f0);
+    font-weight: 600;
+}
+
+.beads-progress .progress-bar {
+    height: 6px;
+    background: var(--bg-tertiary, #0f0f1a);
+    border-radius: 3px;
+    overflow: hidden;
+    display: flex;
+}
+
+.beads-progress .progress-fill {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.beads-progress .progress-fill.completed {
+    background: linear-gradient(90deg, #22c55e, #16a34a);
+}
+
+.beads-progress .progress-fill.failed {
+    background: #ef4444;
+}
+
+.progress-stats {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 11px;
+}
+
+.progress-stats .stat {
+    color: var(--text-secondary, #a0a0c0);
+}
+
+.progress-stats .stat.completed {
+    color: #22c55e;
+}
+
+.progress-stats .stat.ready {
+    color: #3b82f6;
+}
+
+.progress-stats .stat.failed {
+    color: #ef4444;
+}
+
+/* Task List */
+.beads-task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.beads-task {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary, #0f0f1a);
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    position: relative;
+    transition: all 0.2s;
+}
+
+.beads-task:hover {
+    background: rgba(139, 92, 246, 0.05);
+}
+
+.beads-task.in_progress {
+    border-left-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.1);
+}
+
+.beads-task.completed {
+    border-left-color: #22c55e;
+}
+
+.beads-task.failed {
+    border-left-color: #ef4444;
+}
+
+.beads-task.blocked {
+    border-left-color: #6b7280;
+}
+
+/* Merge brackets */
+.beads-task.in-merge-group {
+    margin-left: 16px;
+}
+
+.merge-bracket {
+    position: absolute;
+    left: -8px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    display: flex;
+    flex-direction: column;
+}
+
+.bracket-line {
+    flex: 1;
+    border-left: 2px solid #f59e0b;
+}
+
+.bracket-top {
+    height: 50%;
+    border-left: 2px solid #f59e0b;
+    border-top: 2px solid #f59e0b;
+    border-top-left-radius: 4px;
+}
+
+.bracket-bottom {
+    height: 50%;
+    border-left: 2px solid #f59e0b;
+    border-bottom: 2px solid #f59e0b;
+    border-bottom-left-radius: 4px;
+}
+
+.task-icon {
+    font-size: 12px;
+    width: 16px;
+    text-align: center;
+}
+
+.task-index {
+    color: var(--text-secondary, #a0a0c0);
+    font-size: 11px;
+    min-width: 20px;
+}
+
+.task-title {
+    flex: 1;
+    color: var(--text-primary, #e0e0f0);
+    font-size: 13px;
+}
+
+.task-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--bg-secondary, #1a1a2e);
+}
+
+.task-badge.mergeable {
+    color: #f59e0b;
+}
+
+.task-badge.blocked-by {
+    color: #6b7280;
+}
+
+.task-error {
+    cursor: help;
+}
+
+/* Running indicator */
+.beads-running-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px;
+    color: var(--text-secondary, #a0a0c0);
+    font-size: 12px;
+}
+
+.beads-running-indicator .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--bg-tertiary, #0f0f1a);
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    animation: beads-spin 1s linear infinite;
+}
+
+@keyframes beads-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+

@@ -3,10 +3,79 @@
  *
  * Prompts for the Main Agent (Planner) which does NOT know Playwright API.
  * The Planner only describes what to do in natural language.
+ *
+ * Two modes:
+ * 1. Initial Planning: Generate complete task list (todos)
+ * 2. Progress Tracking: Update based on execution results (legacy mode)
  */
 
+import type { BeadsPlannerOutput, BeadsPlannerTask } from '../beads/types';
+
 /**
- * System prompt for the Planner
+ * System prompt for initial task planning (Beads mode)
+ *
+ * Generates a complete list of todos upfront.
+ * Tasks can be marked as mergeable for batch execution.
+ */
+export const PLANNER_INITIAL_SYSTEM_PROMPT = `You are a task planner for browser automation. Your job is to break down user goals into a list of specific, actionable tasks.
+
+## Output Format (JSON)
+{
+  "epic": "Brief description of the overall goal",
+  "tasks": [
+    { "title": "Task 1 description", "mergeable": true, "type": "browser_action" },
+    { "title": "Task 2 description", "mergeable": true, "blockedBy": [0], "type": "browser_action" },
+    { "title": "Task 3 description", "mergeable": false, "blockedBy": [1], "type": "browser_action" }
+  ],
+  "mergeHint": "Tasks 0-1 can be merged into one script"
+}
+
+## Task Types
+- browser_action: Navigate, click, type, scroll, screenshot, etc.
+- query: Extract data or information from page
+- translate: (future) Language translation
+- export: (future) Generate automation script
+
+## Merge Rules
+Mark tasks as "mergeable": true when:
+1. They are consecutive browser actions (navigate → click → type)
+2. They don't require intermediate observation/verification
+3. They can be executed in a single script
+
+Mark as "mergeable": false when:
+1. Task needs to verify previous step's result
+2. Task depends on dynamic content (e.g., wait for element)
+3. Task extracts data that might be needed later
+
+## blockedBy Field
+- Array of task indices (0-based) that must complete first
+- Creates dependency chain: task 2 blocked by task 1 → task 1 runs first
+- Only use when there's a real dependency
+
+## Rules
+1. Be specific: Include URLs, selectors, text when known
+2. One action per task (unless merging makes sense)
+3. Order tasks logically (dependencies flow downward)
+4. Keep task titles concise but descriptive
+5. Merge consecutive browser actions when possible for efficiency
+
+## Example
+Goal: "Search for 'weather' on Google and click the first result"
+
+Response:
+{
+  "epic": "Search Google for weather",
+  "tasks": [
+    { "title": "Navigate to google.com", "mergeable": true, "type": "browser_action" },
+    { "title": "Type 'weather' in search box", "mergeable": true, "blockedBy": [0], "type": "browser_action" },
+    { "title": "Press Enter to search", "mergeable": false, "blockedBy": [1], "type": "browser_action" },
+    { "title": "Click the first search result", "mergeable": false, "blockedBy": [2], "type": "browser_action" }
+  ],
+  "mergeHint": "Tasks 0-1 can be merged"
+}`;
+
+/**
+ * System prompt for the Planner (legacy step-by-step mode)
  *
  * Simple architecture: Planner ↔ CodeAct loop
  * - Planner gives instructions in natural language
@@ -245,3 +314,210 @@ export const CHAT_RESPONSES: Record<string, string> = {
     thanks: '不客气！还有什么需要帮忙的吗？',
     goodbye: '再见！随时可以找我帮忙。',
 };
+
+// ============================================
+// Beads Planning Functions
+// ============================================
+
+/**
+ * Build user message for initial planning (Beads mode)
+ */
+export function buildInitialPlanningMessage(goal: string): string {
+    return `## Goal
+${goal}
+
+Please break this down into specific, actionable tasks. Output JSON with the task list.`;
+}
+
+/**
+ * Build user message for progress update (Beads mode)
+ */
+export function buildProgressUpdateMessage(params: {
+    goal: string;
+    completedTasks: Array<{ title: string; result?: string }>;
+    failedTasks: Array<{ title: string; error?: string }>;
+    remainingTasks: Array<{ title: string }>;
+    currentTaskResult?: { success: boolean; result?: string; error?: string };
+}): string {
+    const {
+        goal,
+        completedTasks,
+        failedTasks,
+        remainingTasks,
+        currentTaskResult,
+    } = params;
+
+    let message = `## Goal\n${goal}\n\n`;
+
+    if (completedTasks.length > 0) {
+        message += `## Completed (${completedTasks.length})\n`;
+        completedTasks.forEach((t, i) => {
+            message += `${i + 1}. ✓ ${t.title}\n`;
+        });
+        message += '\n';
+    }
+
+    if (failedTasks.length > 0) {
+        message += `## Failed (${failedTasks.length})\n`;
+        failedTasks.forEach((t, i) => {
+            message += `${i + 1}. ✗ ${t.title}${
+                t.error ? `: ${t.error}` : ''
+            }\n`;
+        });
+        message += '\n';
+    }
+
+    if (remainingTasks.length > 0) {
+        message += `## Remaining (${remainingTasks.length})\n`;
+        remainingTasks.forEach((t, i) => {
+            message += `${i + 1}. ○ ${t.title}\n`;
+        });
+        message += '\n';
+    }
+
+    if (currentTaskResult) {
+        message += `## Last Task Result\n`;
+        message += currentTaskResult.success
+            ? `✓ Success${
+                  currentTaskResult.result
+                      ? `: ${currentTaskResult.result}`
+                      : ''
+              }\n`
+            : `✗ Failed${
+                  currentTaskResult.error ? `: ${currentTaskResult.error}` : ''
+              }\n`;
+    }
+
+    return message;
+}
+
+/**
+ * Extract balanced JSON object from text
+ * Handles nested braces correctly by counting open/close pairs
+ */
+function extractBalancedJson(text: string): string | null {
+    const startIndex = text.indexOf('{');
+    if (startIndex === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = startIndex; i < text.length; i++) {
+        const char = text[i];
+
+        if (escape) {
+            escape = false;
+            continue;
+        }
+
+        if (char === '\\' && inString) {
+            escape = true;
+            continue;
+        }
+
+        if (char === '"') {
+            inString = !inString;
+            continue;
+        }
+
+        if (inString) continue;
+
+        if (char === '{') {
+            depth++;
+        } else if (char === '}') {
+            depth--;
+            if (depth === 0) {
+                return text.slice(startIndex, i + 1);
+            }
+        }
+    }
+
+    return null; // Unbalanced braces
+}
+
+/**
+ * Parse initial planning response from LLM
+ */
+export function parseInitialPlanningResponse(
+    response: string
+): BeadsPlannerOutput | null {
+    try {
+        // Extract first balanced JSON object from response
+        const jsonString = extractBalancedJson(response);
+        if (!jsonString) {
+            return null;
+        }
+
+        const parsed = JSON.parse(jsonString);
+
+        // Validate required fields
+        if (!parsed.epic || !Array.isArray(parsed.tasks)) {
+            return null;
+        }
+
+        // Normalize tasks
+        const tasks: BeadsPlannerTask[] = parsed.tasks.map(
+            (t: Record<string, unknown>) => ({
+                title: String(t.title || ''),
+                mergeable: t.mergeable === true,
+                blockedBy: Array.isArray(t.blockedBy)
+                    ? (t.blockedBy as number[])
+                    : undefined,
+                type: (t.type as BeadsPlannerTask['type']) || 'browser_action',
+            })
+        );
+
+        return {
+            epic: String(parsed.epic),
+            tasks,
+            mergeHint: parsed.mergeHint ? String(parsed.mergeHint) : undefined,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Find mergeable task groups from a list of tasks
+ * Returns array of task index ranges that can be merged
+ */
+export function findMergeableGroups(
+    tasks: BeadsPlannerTask[]
+): Array<[number, number]> {
+    const groups: Array<[number, number]> = [];
+    let groupStart: number | null = null;
+
+    for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+
+        if (task.mergeable) {
+            if (groupStart === null) {
+                groupStart = i;
+            }
+        } else {
+            if (groupStart !== null && i - groupStart > 1) {
+                // Group has at least 2 tasks
+                groups.push([groupStart, i - 1]);
+            }
+            groupStart = null;
+        }
+    }
+
+    // Handle group at end
+    if (groupStart !== null && tasks.length - groupStart > 1) {
+        groups.push([groupStart, tasks.length - 1]);
+    }
+
+    return groups;
+}
+
+/**
+ * Merge task titles into a single instruction
+ */
+export function mergeTaskTitles(tasks: BeadsPlannerTask[]): string {
+    if (tasks.length === 0) return '';
+    if (tasks.length === 1) return tasks[0].title;
+
+    return tasks.map((t) => t.title).join(', then ');
+}

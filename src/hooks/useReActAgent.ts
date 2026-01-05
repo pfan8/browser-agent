@@ -11,6 +11,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { Operation, ChatMessage, ExecutionStep } from '@dsl/types';
+import type { BeadsPlanUI } from '../types/beads';
 
 // ============================================
 // Types
@@ -92,6 +93,7 @@ interface ReActAgentHookReturn {
 
     // Agent State
     currentPlan: TaskPlan | null;
+    beadsPlan: BeadsPlanUI | null;
     progress: AgentProgress | null;
     status: string;
     isRunning: boolean;
@@ -178,6 +180,7 @@ export function useReActAgent(
 
     // Agent State
     const [currentPlan, setCurrentPlan] = useState<TaskPlan | null>(null);
+    const [beadsPlan, setBeadsPlan] = useState<BeadsPlanUI | null>(null);
     const [progress, setProgress] = useState<AgentProgress | null>(null);
     const [status, setStatus] = useState<string>('idle');
     const [isRunning, setIsRunning] = useState(false);
@@ -616,8 +619,11 @@ export function useReActAgent(
                         'Restoring checkpoint before edit:',
                         editCheckpointId
                     );
+                    // Find the threadId for this checkpoint
+                    const targetThreadId = currentSessionId || '';
                     const restoreResult =
                         await window.electronAPI.agent.restoreCheckpoint(
+                            targetThreadId,
                             editCheckpointId
                         );
                     if (!restoreResult.success) {
@@ -637,7 +643,7 @@ export function useReActAgent(
                         const restoredMessages: AgentChatMessage[] =
                             conversation.map((msg) => ({
                                 id: msg.id,
-                                role: (msg.role === 'assistant'
+                                role: ((msg.role as string) === 'assistant'
                                     ? 'agent'
                                     : msg.role) as 'user' | 'agent' | 'system',
                                 content: msg.content,
@@ -733,7 +739,7 @@ export function useReActAgent(
                         const restoredMessages: AgentChatMessage[] =
                             conversation.map((msg) => ({
                                 id: msg.id,
-                                role: (msg.role === 'assistant'
+                                role: ((msg.role as string) === 'assistant'
                                     ? 'agent'
                                     : msg.role) as 'user' | 'agent' | 'system',
                                 content: msg.content,
@@ -1277,6 +1283,38 @@ export function useReActAgent(
     }, [hasAgentAPI, refreshSessions, refreshCheckpoints]);
 
     // ============================================
+    // Beads Plan Polling
+    // ============================================
+
+    // Poll for Beads plan while agent is running
+    useEffect(() => {
+        if (!hasAgentAPI || !isRunning) {
+            return;
+        }
+
+        const fetchBeadsPlan = async () => {
+            try {
+                const result = await window.electronAPI.agent.getBeadsPlan?.();
+                if (result?.success && result.plan) {
+                    // Cast the plan to the proper type since the IPC returns a generic structure
+                    setBeadsPlan(result.plan as BeadsPlanUI);
+                }
+            } catch (e) {
+                // Beads API may not be available yet
+                console.debug('Beads plan fetch skipped:', e);
+            }
+        };
+
+        // Initial fetch
+        fetchBeadsPlan();
+
+        // Poll every second while running
+        const interval = setInterval(fetchBeadsPlan, 1000);
+
+        return () => clearInterval(interval);
+    }, [hasAgentAPI, isRunning]);
+
+    // ============================================
     // Return Hook Interface
     // ============================================
 
@@ -1291,6 +1329,7 @@ export function useReActAgent(
 
         // Agent State
         currentPlan,
+        beadsPlan,
         progress,
         status,
         isRunning,
