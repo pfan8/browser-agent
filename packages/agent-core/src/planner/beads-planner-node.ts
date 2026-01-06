@@ -331,8 +331,8 @@ async function fetchProgressStats(
     epicId: string,
     beadsClient: IBeadsClient
 ): Promise<ProgressStats> {
-    const allTasks = await beadsClient.list();
-    const childTasks = allTasks.filter((t) => t.parentId === epicId);
+    // Use native --parent filter to get child tasks (proper Beads API)
+    const childTasks = await beadsClient.list({ parentId: epicId });
 
     const completedCount = childTasks.filter(
         (t) => t.status === 'closed'
@@ -340,8 +340,12 @@ async function fetchProgressStats(
     const openCount = childTasks.filter((t) => t.status === 'open').length;
     const totalCount = childTasks.length;
 
+    // Filter ready tasks to only include children of this epic
     const readyTasks = await beadsClient.getReady();
-    const readyIds = readyTasks.map((t) => t.id);
+    const childIdPrefix = `${epicId}.`;
+    const readyIds = readyTasks
+        .filter((t) => t.id.startsWith(childIdPrefix))
+        .map((t) => t.id);
 
     return { completedCount, openCount, totalCount, readyIds };
 }

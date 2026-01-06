@@ -118,6 +118,12 @@ export class BeadsCliAdapter implements IBeadsClient {
         );
         const task = parseBeadsTask(output);
 
+        // Remove the implicit parent-child blocking dependency that --parent creates
+        // This allows child tasks to become "ready" without waiting for the parent epic
+        if (options?.parentId) {
+            await this.removeDependency(task.id, options.parentId);
+        }
+
         // Add dependencies if specified
         // blockedBy means: blockerId blocks task.id, so we call addDependency(blockerId, task.id)
         if (options?.blockedBy && options.blockedBy.length > 0) {
@@ -143,10 +149,34 @@ export class BeadsCliAdapter implements IBeadsClient {
         type: 'blocks' | 'related' | 'parent' = 'blocks'
     ): Promise<BeadsOperationResult> {
         try {
-            // bd dep add A B --type blocks → A blocks B
+            // bd dep add A B --type blocks → A depends on B (B blocks A)
+            // So to make blockerId block blockedId, we need: blockedId depends on blockerId
+            // Therefore: bd dep add blockedId blockerId --type blocks
             await this.execBd(
-                `dep add ${blockerId} ${blockedId} --type ${type}`
+                `dep add ${blockedId} ${blockerId} --type ${type}`
             );
+            return { success: true };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message,
+            };
+        }
+    }
+
+    /**
+     * Remove a dependency between two tasks.
+     *
+     * @param dependentId - The task that depends on another
+     * @param dependencyId - The task that is depended upon
+     */
+    async removeDependency(
+        dependentId: string,
+        dependencyId: string
+    ): Promise<BeadsOperationResult> {
+        try {
+            // bd dep remove A B → removes dependency where A depends on B
+            await this.execBd(`dep remove ${dependentId} ${dependencyId}`);
             return { success: true };
         } catch (error) {
             return {

@@ -189,3 +189,87 @@ export {
     getLangSmithEnvVars,
     LANGSMITH_SETUP_INSTRUCTIONS,
 } from './tracing';
+
+// ============================================================
+// V3 Multimodal Orchestrator Architecture
+// ============================================================
+
+// Multimodal types and utilities
+export {
+    // Content types
+    type ContentBlock,
+    type ContentBlockType,
+    type TextBlock,
+    type ImageBlock,
+    type AudioBlock,
+    type VideoBlock,
+    type FileBlock,
+    type CodeBlock,
+    type MultimodalMessage,
+    type ArtifactType,
+    type ArtifactRef,
+    // Helpers
+    createTextMessage,
+    createMultimodalMessage,
+    extractText,
+    extractBlocks,
+    hasContentType,
+    getContentTypes,
+    generateArtifactId,
+    // Artifact Manager
+    type ArtifactManagerConfig,
+    ArtifactManager,
+    createArtifactManager,
+    // SubAgent types V3
+    type SubAgentRequest,
+    type SubAgentOptions,
+    type SubAgentResult as SubAgentResultV3,
+    type StreamEvent,
+    type SubAgentContext as SubAgentContextV3,
+    type ISubAgentV3,
+    type ISubAgentRegistryV3,
+    BaseSubAgent,
+    SubAgentRegistryV3,
+    createSubAgentRegistryV3,
+} from './multimodal';
+
+// Orchestrator (V3 Graph nodes)
+export {
+    // State
+    AgentStateAnnotationV3,
+    type AgentStateV3,
+    type AgentStatusV3,
+    createInitialStateV3,
+    isTaskComplete,
+    getStateSummary,
+    // Orchestrator Node
+    type OrchestratorNodeConfig,
+    type OrchestratorDecision,
+    createOrchestratorNode,
+    // Executor Node
+    type ExecutorNodeConfig,
+    createExecutorNode,
+    routeAfterOrchestrator,
+    routeAfterExecutor,
+} from './orchestrator';
+
+// SubAgents V3
+export {
+    // CodeAct SubAgent
+    type CodeActSubAgentConfig,
+    CodeActSubAgentV3,
+    createCodeActSubAgentV3,
+    // Vision SubAgent
+    type VisionSubAgentConfig,
+    VisionSubAgentV3,
+    createVisionSubAgentV3,
+} from './subagents-v3';
+
+// V3 Graph
+export {
+    createGraphV3,
+    type GraphV3Config,
+    type CompiledGraphV3,
+    type ExecuteOptions,
+    type GraphEvent,
+} from './graph-v3';

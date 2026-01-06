@@ -56,7 +56,8 @@ export class CodeActSubAgent implements ISubAgent {
      */
     canHandle(task: BeadsTask): boolean {
         // CodeAct handles browser_action and query tasks
-        const taskType = (task.metadata?.type as SubAgentTaskType) || 'browser_action';
+        const taskType =
+            (task.metadata?.type as SubAgentTaskType) || 'browser_action';
         return this.supportedTypes.includes(taskType);
     }
 
@@ -118,7 +119,8 @@ export class CodeActSubAgent implements ISubAgent {
             }
         } catch (error) {
             const duration = Date.now() - startTime;
-            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorMessage =
+                error instanceof Error ? error.message : String(error);
 
             log.error('CodeAct execution error', {
                 duration,
@@ -190,8 +192,14 @@ export class CodeActSubAgent implements ISubAgent {
         const lowerInstruction = instruction.toLowerCase();
 
         // Navigate
-        if (lowerInstruction.includes('navigate') || lowerInstruction.includes('go to') || lowerInstruction.includes('open')) {
-            const urlMatch = instruction.match(/https?:\/\/[^\s"']+|(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s"']*/);
+        if (
+            lowerInstruction.includes('navigate') ||
+            lowerInstruction.includes('go to') ||
+            lowerInstruction.includes('open')
+        ) {
+            const urlMatch = instruction.match(
+                /https?:\/\/[^\s"']+|(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s"']*/
+            );
             if (urlMatch) {
                 let url = urlMatch[0];
                 if (!url.startsWith('http')) {
@@ -203,7 +211,9 @@ export class CodeActSubAgent implements ISubAgent {
 
         // Click
         if (lowerInstruction.includes('click')) {
-            const selectorMatch = instruction.match(/["']([^"']+)["']|on\s+(.+?)(?:\s+button|\s+link|\s+element)?$/i);
+            const selectorMatch = instruction.match(
+                /["']([^"']+)["']|on\s+(.+?)(?:\s+button|\s+link|\s+element)?$/i
+            );
             if (selectorMatch) {
                 const selector = selectorMatch[1] || selectorMatch[2];
                 return { type: 'click', selector: selector.trim() };
@@ -211,9 +221,15 @@ export class CodeActSubAgent implements ISubAgent {
         }
 
         // Type
-        if (lowerInstruction.includes('type') || lowerInstruction.includes('enter') || lowerInstruction.includes('input')) {
+        if (
+            lowerInstruction.includes('type') ||
+            lowerInstruction.includes('enter') ||
+            lowerInstruction.includes('input')
+        ) {
             const textMatch = instruction.match(/["']([^"']+)["']/);
-            const selectorMatch = instruction.match(/in(?:to)?\s+(?:the\s+)?["']?([^"']+?)["']?(?:\s+(?:field|input|box))?$/i);
+            const selectorMatch = instruction.match(
+                /in(?:to)?\s+(?:the\s+)?["']?([^"']+?)["']?(?:\s+(?:field|input|box))?$/i
+            );
             if (textMatch) {
                 return {
                     type: 'type',
@@ -224,7 +240,11 @@ export class CodeActSubAgent implements ISubAgent {
         }
 
         // Get page info
-        if (lowerInstruction.includes('get') && (lowerInstruction.includes('info') || lowerInstruction.includes('page'))) {
+        if (
+            lowerInstruction.includes('get') &&
+            (lowerInstruction.includes('info') ||
+                lowerInstruction.includes('page'))
+        ) {
             return { type: 'getPageInfo' };
         }
 
@@ -252,11 +272,15 @@ export class CodeActSubAgent implements ISubAgent {
                     break;
 
                 case 'click':
-                    code = `await context.click(${JSON.stringify(action.selector)});`;
+                    code = `await context.click(${JSON.stringify(
+                        action.selector
+                    )});`;
                     break;
 
                 case 'type':
-                    code = `await context.fill(${JSON.stringify(action.selector)}, ${JSON.stringify(action.text)});`;
+                    code = `await context.fill(${JSON.stringify(
+                        action.selector
+                    )}, ${JSON.stringify(action.text)});`;
                     break;
 
                 case 'getPageInfo':
@@ -277,7 +301,9 @@ export class CodeActSubAgent implements ISubAgent {
                 default:
                     return {
                         success: false,
-                        error: `Unknown action type: ${(action as ParsedAction).type}`,
+                        error: `Unknown action type: ${
+                            (action as ParsedAction).type
+                        }`,
                     };
             }
 
@@ -308,7 +334,13 @@ export class CodeActSubAgent implements ISubAgent {
  * Parsed action from instruction
  */
 interface ParsedAction {
-    type: 'navigate' | 'click' | 'type' | 'getPageInfo' | 'screenshot' | 'instruction';
+    type:
+        | 'navigate'
+        | 'click'
+        | 'type'
+        | 'getPageInfo'
+        | 'screenshot'
+        | 'instruction';
     url?: string;
     selector?: string;
     text?: string;
@@ -321,4 +353,3 @@ interface ParsedAction {
 export function createCodeActSubAgent(config: CodeActAdapterConfig): ISubAgent {
     return new CodeActSubAgent(config);
 }
-

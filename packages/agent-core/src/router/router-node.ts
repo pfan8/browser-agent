@@ -222,7 +222,36 @@ export function createRouterNode(config: RouterNodeConfig) {
 
         try {
             // Get ready tasks (no blockers)
-            const readyTasks = await beadsClient.getReady();
+            const allReadyTasks = await beadsClient.getReady();
+
+            // Filter to only include child tasks of the current epic
+            // Exclude: 1) The epic itself, 2) Tasks that are epics, 3) Tasks not under this epic
+            const epicId = state.beadsEpicId;
+            const childIdPrefix = epicId ? `${epicId}.` : '';
+
+            const readyTasks = allReadyTasks.filter((task) => {
+                // Exclude the epic itself
+                if (task.id === epicId) return false;
+
+                // Exclude tasks marked as epics
+                if (task.metadata?.isEpic === true) return false;
+
+                // Only include children of the current epic
+                if (childIdPrefix && !task.id.startsWith(childIdPrefix)) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            log.debugWithTrace(traceContext!, '[ROUTER] Filtered ready tasks', {
+                allReadyCount: allReadyTasks.length,
+                filteredCount: readyTasks.length,
+                epicId,
+                excludedIds: allReadyTasks
+                    .filter((t) => !readyTasks.includes(t))
+                    .map((t) => t.id),
+            });
 
             if (readyTasks.length === 0) {
                 const result = await handleNoReadyTasks(
@@ -271,7 +300,17 @@ export function createRouterNode(config: RouterNodeConfig) {
 
             // Fetch fresh ready tasks AFTER closing completed tasks
             // This includes newly-unblocked tasks that became ready
-            const freshReadyTasks = await beadsClient.getReady();
+            const allFreshReadyTasks = await beadsClient.getReady();
+
+            // Apply same filtering as before
+            const freshReadyTasks = allFreshReadyTasks.filter((task) => {
+                if (task.id === epicId) return false;
+                if (task.metadata?.isEpic === true) return false;
+                if (childIdPrefix && !task.id.startsWith(childIdPrefix)) {
+                    return false;
+                }
+                return true;
+            });
             const freshReadyTaskIds = freshReadyTasks.map((t) => t.id);
 
             log.infoWithTrace(

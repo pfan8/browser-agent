@@ -112,7 +112,9 @@ function createStepTracker() {
                     step: {
                         id: pendingPlannerStepId,
                         description: lastPlannerThought
-                            ? `💭 ${lastPlannerThought.substring(0, 50)}${lastPlannerThought.length > 50 ? '...' : ''}`
+                            ? `💭 ${lastPlannerThought.substring(0, 50)}${
+                                  lastPlannerThought.length > 50 ? '...' : ''
+                              }`
                             : '分析完成',
                     },
                     node: 'planner',
@@ -131,11 +133,19 @@ function createStepTracker() {
                 if (newAction) {
                     // Complete pending codeact step
                     if (pendingCodeActStepId) {
-                        const duration = stepStartTimes.get(pendingCodeActStepId)
-                            ? Date.now() - stepStartTimes.get(pendingCodeActStepId)!
+                        const duration = stepStartTimes.get(
+                            pendingCodeActStepId
+                        )
+                            ? Date.now() -
+                              stepStartTimes.get(pendingCodeActStepId)!
                             : 100;
-                        const prevAction = state.actionHistory![currentActionCount - 2];
-                        emitCodeActCompletion(pendingCodeActStepId, prevAction, duration);
+                        const prevAction =
+                            state.actionHistory![currentActionCount - 2];
+                        emitCodeActCompletion(
+                            pendingCodeActStepId,
+                            prevAction,
+                            duration
+                        );
                         pendingCodeActStepId = null;
                     }
 
@@ -153,7 +163,9 @@ function createStepTracker() {
                     safeSend('agent-step-started', {
                         step: {
                             id: stepId,
-                            description: `⚡ ${instruction.substring(0, 50)}${instruction.length > 50 ? '...' : ''}`,
+                            description: `⚡ ${instruction.substring(0, 50)}${
+                                instruction.length > 50 ? '...' : ''
+                            }`,
                             tool: 'codeact',
                         },
                         node: 'codeact',
@@ -180,7 +192,11 @@ function createStepTracker() {
                     const duration = stepStartTimes.get(pendingCodeActStepId)
                         ? Date.now() - stepStartTimes.get(pendingCodeActStepId)!
                         : 100;
-                    emitCodeActCompletion(pendingCodeActStepId, lastAction, duration);
+                    emitCodeActCompletion(
+                        pendingCodeActStepId,
+                        lastAction,
+                        duration
+                    );
                     pendingCodeActStepId = null;
                 }
             }
@@ -214,7 +230,9 @@ function createStepTracker() {
  */
 function emitCodeActCompletion(
     stepId: string,
-    action: { result?: { success?: boolean; error?: string }; reasoning?: string } | undefined,
+    action:
+        | { result?: { success?: boolean; error?: string }; reasoning?: string }
+        | undefined,
     duration: number
 ) {
     if (!action) return;
@@ -223,7 +241,9 @@ function emitCodeActCompletion(
         safeSend('agent-step-completed', {
             step: {
                 id: stepId,
-                description: `✅ ${action.reasoning?.substring(0, 40) || '执行成功'}`,
+                description: `✅ ${
+                    action.reasoning?.substring(0, 40) || '执行成功'
+                }`,
             },
             node: 'codeact',
             action,
@@ -233,7 +253,9 @@ function emitCodeActCompletion(
         safeSend('agent-step-failed', {
             step: {
                 id: stepId,
-                description: `❌ ${action.reasoning?.substring(0, 40) || '执行失败'}`,
+                description: `❌ ${
+                    action.reasoning?.substring(0, 40) || '执行失败'
+                }`,
                 tool: 'codeact',
             },
             node: 'codeact',
@@ -257,8 +279,13 @@ export function registerAgentHandlers(): void {
             options?: { threadId?: string; continueSession?: boolean }
         ) => {
             log.info(
-                `Executing task: "${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"`,
-                { threadId: options?.threadId, continueSession: options?.continueSession }
+                `Executing task: "${task.substring(0, 100)}${
+                    task.length > 100 ? '...' : ''
+                }"`,
+                {
+                    threadId: options?.threadId,
+                    continueSession: options?.continueSession,
+                }
             );
 
             try {
@@ -277,7 +304,9 @@ export function registerAgentHandlers(): void {
                     // Check abort
                     if (event.node === '__abort__') {
                         log.info('Task was stopped by user');
-                        safeSend('agent-task-stopped', { message: '任务已被用户停止' });
+                        safeSend('agent-task-stopped', {
+                            message: '任务已被用户停止',
+                        });
                         return safeSerialize({
                             success: false,
                             error: 'Task stopped by user',
@@ -287,7 +316,9 @@ export function registerAgentHandlers(): void {
 
                     // Status update
                     if (event.state.status) {
-                        safeSend('agent-status-changed', { status: event.state.status });
+                        safeSend('agent-status-changed', {
+                            status: event.state.status,
+                        });
                     }
 
                     // Track node events
@@ -303,8 +334,11 @@ export function registerAgentHandlers(): void {
 
                     // Merge state
                     finalState = finalState
-                        ? { ...(finalState as object), ...(event.state as object) } as AgentState
-                        : event.state as AgentState;
+                        ? ({
+                              ...(finalState as object),
+                              ...(event.state as object),
+                          } as AgentState)
+                        : (event.state as AgentState);
                 }
 
                 tracker.completePendingSteps();
@@ -312,11 +346,18 @@ export function registerAgentHandlers(): void {
                 if (finalState) {
                     if (finalState.isComplete && !finalState.error) {
                         log.info('Task completed successfully');
-                        safeSend('agent-task-completed', { result: finalState.result });
-                        return safeSerialize({ success: true, result: finalState.result });
+                        safeSend('agent-task-completed', {
+                            result: finalState.result,
+                        });
+                        return safeSerialize({
+                            success: true,
+                            result: finalState.result,
+                        });
                     } else {
                         log.warn('Task failed:', finalState.error);
-                        safeSend('agent-task-failed', { error: finalState.error });
+                        safeSend('agent-task-failed', {
+                            error: finalState.error,
+                        });
                         return safeSerialize({
                             success: false,
                             error: finalState.error,
@@ -327,7 +368,8 @@ export function registerAgentHandlers(): void {
 
                 return { success: false, error: 'No final state' };
             } catch (error) {
-                const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+                const errorMsg =
+                    error instanceof Error ? error.message : 'Unknown error';
                 log.error('Task failed with error:', errorMsg);
                 safeSend('agent-task-failed', { error: errorMsg });
                 return { success: false, error: errorMsg };
@@ -376,4 +418,3 @@ export function registerAgentHandlers(): void {
 
     log.info('Agent IPC handlers registered');
 }
-

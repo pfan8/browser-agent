@@ -377,7 +377,7 @@ export class BrowserAgent {
             await this.memoryManager.extractFromTaskResult({
                 goal,
                 success,
-                actionHistory: state.actionHistory.map((a) => ({
+                actionHistory: (state.actionHistory || []).map((a) => ({
                     tool: a.tool,
                     args: a.args,
                     result: a.result
@@ -391,9 +391,7 @@ export class BrowserAgent {
                 duration,
             });
         } catch (error) {
-            log.warn('Failed to extract memories', {
-                error: error instanceof Error ? error.message : 'Unknown error',
-            });
+            log.error('Failed to extract memories', error);
         }
     }
 

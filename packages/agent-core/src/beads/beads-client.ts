@@ -43,6 +43,18 @@ export interface IBeadsClient {
     ): Promise<BeadsOperationResult>;
 
     /**
+     * Remove a dependency between tasks
+     * Equivalent to: bd dep remove <dependentId> <dependencyId>
+     *
+     * @param dependentId - The task that depends on another
+     * @param dependencyId - The task that is depended upon
+     */
+    removeDependency(
+        dependentId: string,
+        dependencyId: string
+    ): Promise<BeadsOperationResult>;
+
+    /**
      * Get all ready tasks (no open blockers)
      * Equivalent to: bd ready --json
      */
