@@ -5,10 +5,10 @@
  */
 
 // State
-export type { AgentStateV3, AgentStatusV3 } from './state';
+export type { AgentState, AgentStatus } from './state';
 export {
-    AgentStateAnnotationV3,
-    createInitialStateV3,
+    AgentStateAnnotation,
+    createInitialState,
     isTaskComplete,
     getStateSummary,
 } from './state';

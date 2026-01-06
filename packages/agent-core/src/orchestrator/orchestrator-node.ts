@@ -7,10 +7,10 @@
 
 import { ChatAnthropic } from '@langchain/anthropic';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import type { AgentStateV3 } from './state';
+import type { AgentState } from './state';
 import type {
-    ISubAgentV3,
-    ISubAgentRegistryV3,
+    ISubAgent,
+    ISubAgentRegistry,
     SubAgentRequest,
 } from '../multimodal';
 import {
@@ -37,7 +37,7 @@ export interface OrchestratorNodeConfig {
     /** LLM model */
     model?: string;
     /** SubAgent registry */
-    subAgentRegistry: ISubAgentRegistryV3;
+    subAgentRegistry: ISubAgentRegistry;
     /** Maximum decision iterations before forcing completion */
     maxIterations?: number;
 }
@@ -126,7 +126,7 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
     }
     const llm = new ChatAnthropic(llmOptions);
 
-    return async (state: AgentStateV3): Promise<Partial<AgentStateV3>> => {
+    return async (state: AgentState): Promise<Partial<AgentState>> => {
         const traceContext = state.traceContext;
         const timer = startTimer(log, 'orchestrator', traceContext ?? undefined);
 
@@ -250,9 +250,9 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
  * Make a decision about what to do next
  */
 async function makeDecision(
-    state: AgentStateV3,
+    state: AgentState,
     llm: ChatAnthropic,
-    registry: ISubAgentRegistryV3
+    registry: ISubAgentRegistry
 ): Promise<OrchestratorDecision> {
     // Build context for LLM
     const availableAgents = registry.getAll().map((agent) => ({
@@ -283,7 +283,7 @@ async function makeDecision(
  * Build the decision prompt
  */
 function buildDecisionPrompt(
-    state: AgentStateV3,
+    state: AgentState,
     availableAgents: Array<{
         name: string;
         description: string;
@@ -328,7 +328,7 @@ Based on the above, decide the next action.`;
  */
 function parseDecision(
     responseText: string,
-    state: AgentStateV3
+    state: AgentState
 ): OrchestratorDecision {
     try {
         // Extract JSON from response

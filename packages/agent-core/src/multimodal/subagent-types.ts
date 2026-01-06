@@ -1,7 +1,7 @@
 /**
- * SubAgent Types V3
+ * SubAgent Types
  *
- * New SubAgent interface with full multimodal support.
+ * SubAgent interface with full multimodal support.
  * SubAgents can both consume and produce multimodal content.
  */
 
@@ -147,13 +147,13 @@ export interface SubAgentContext {
 }
 
 // ============================================================
-// ISubAgent Interface V3
+// ISubAgent Interface
 // ============================================================
 
 /**
  * SubAgent interface with full multimodal support
  */
-export interface ISubAgentV3 {
+export interface ISubAgent {
     /** Unique name identifying this SubAgent */
     readonly name: string;
 
@@ -208,17 +208,17 @@ export interface ISubAgentV3 {
 }
 
 // ============================================================
-// SubAgent Registry V3
+// SubAgent Registry
 // ============================================================
 
 /**
  * Registry for managing SubAgents
  */
-export interface ISubAgentRegistryV3 {
+export interface ISubAgentRegistry {
     /**
      * Register a SubAgent
      */
-    register(agent: ISubAgentV3): void;
+    register(agent: ISubAgent): void;
 
     /**
      * Unregister a SubAgent by name
@@ -228,27 +228,27 @@ export interface ISubAgentRegistryV3 {
     /**
      * Get all registered SubAgents
      */
-    getAll(): ISubAgentV3[];
+    getAll(): ISubAgent[];
 
     /**
      * Find a SubAgent by name
      */
-    findByName(name: string): ISubAgentV3 | null;
+    findByName(name: string): ISubAgent | null;
 
     /**
      * Find a SubAgent that can handle the given request
      */
-    findForRequest(request: SubAgentRequest): ISubAgentV3 | null;
+    findForRequest(request: SubAgentRequest): ISubAgent | null;
 
     /**
      * Find SubAgents that support a specific input type
      */
-    findByInputType(type: ContentBlockType): ISubAgentV3[];
+    findByInputType(type: ContentBlockType): ISubAgent[];
 
     /**
      * Find SubAgents that can produce a specific output type
      */
-    findByOutputType(type: ContentBlockType): ISubAgentV3[];
+    findByOutputType(type: ContentBlockType): ISubAgent[];
 }
 
 // ============================================================
@@ -258,7 +258,7 @@ export interface ISubAgentRegistryV3 {
 /**
  * Base class for SubAgent implementations
  */
-export abstract class BaseSubAgent implements ISubAgentV3 {
+export abstract class BaseSubAgent implements ISubAgent {
     abstract readonly name: string;
     abstract readonly description: string;
     abstract readonly inputTypes: ContentBlockType[];
@@ -326,10 +326,10 @@ export abstract class BaseSubAgent implements ISubAgentV3 {
 /**
  * Default implementation of SubAgent registry
  */
-export class SubAgentRegistryV3 implements ISubAgentRegistryV3 {
-    private agents: Map<string, ISubAgentV3> = new Map();
+export class SubAgentRegistry implements ISubAgentRegistry {
+    private agents: Map<string, ISubAgent> = new Map();
 
-    register(agent: ISubAgentV3): void {
+    register(agent: ISubAgent): void {
         if (this.agents.has(agent.name)) {
             console.warn(`[SubAgentRegistry] Replacing agent: ${agent.name}`);
         }
@@ -340,17 +340,17 @@ export class SubAgentRegistryV3 implements ISubAgentRegistryV3 {
         return this.agents.delete(name);
     }
 
-    getAll(): ISubAgentV3[] {
+    getAll(): ISubAgent[] {
         return Array.from(this.agents.values()).sort(
             (a, b) => (b.priority || 0) - (a.priority || 0)
         );
     }
 
-    findByName(name: string): ISubAgentV3 | null {
+    findByName(name: string): ISubAgent | null {
         return this.agents.get(name) || null;
     }
 
-    findForRequest(request: SubAgentRequest): ISubAgentV3 | null {
+    findForRequest(request: SubAgentRequest): ISubAgent | null {
         // If agent name is specified, find by name
         if (request.agentName) {
             const agent = this.findByName(request.agentName);
@@ -370,11 +370,11 @@ export class SubAgentRegistryV3 implements ISubAgentRegistryV3 {
         return null;
     }
 
-    findByInputType(type: ContentBlockType): ISubAgentV3[] {
+    findByInputType(type: ContentBlockType): ISubAgent[] {
         return this.getAll().filter((a) => a.inputTypes.includes(type));
     }
 
-    findByOutputType(type: ContentBlockType): ISubAgentV3[] {
+    findByOutputType(type: ContentBlockType): ISubAgent[] {
         return this.getAll().filter((a) => a.outputTypes.includes(type));
     }
 }
@@ -382,7 +382,7 @@ export class SubAgentRegistryV3 implements ISubAgentRegistryV3 {
 /**
  * Create a new SubAgent registry
  */
-export function createSubAgentRegistryV3(): ISubAgentRegistryV3 {
-    return new SubAgentRegistryV3();
+export function createSubAgentRegistry(): ISubAgentRegistry {
+    return new SubAgentRegistry();
 }
 

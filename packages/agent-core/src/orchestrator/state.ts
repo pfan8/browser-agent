@@ -1,5 +1,5 @@
 /**
- * Agent State V3
+ * Agent State
  *
  * Unified state definition for the multimodal orchestrator architecture.
  */
@@ -51,7 +51,7 @@ function mergeReducer<T extends Record<string, unknown>>(
  *
  * Defines the state shape with proper reducers for LangGraph.
  */
-export const AgentStateAnnotationV3 = Annotation.Root({
+export const AgentStateAnnotation = Annotation.Root({
     // ============ Input ============
     /** Original user input (multimodal) */
     inputMessage: Annotation<MultimodalMessage>(),
@@ -61,7 +61,7 @@ export const AgentStateAnnotationV3 = Annotation.Root({
 
     // ============ Orchestration ============
     /** Current execution status */
-    status: Annotation<AgentStatusV3>({
+    status: Annotation<AgentStatus>({
         default: () => 'initializing',
     }),
 
@@ -124,12 +124,12 @@ export const AgentStateAnnotationV3 = Annotation.Root({
 /**
  * Agent State type alias
  */
-export type AgentStateV3 = typeof AgentStateAnnotationV3.State;
+export type AgentState = typeof AgentStateAnnotation.State;
 
 /**
  * Agent status values
  */
-export type AgentStatusV3 =
+export type AgentStatus =
     | 'initializing'
     | 'orchestrating'
     | 'executing'
@@ -143,11 +143,11 @@ export type AgentStatusV3 =
 /**
  * Create initial state from user input
  */
-export function createInitialStateV3(
+export function createInitialState(
     inputMessage: MultimodalMessage,
     goal?: string,
     traceContext?: TraceContext
-): Partial<AgentStateV3> {
+): Partial<AgentState> {
     // Extract goal from input if not provided
     const extractedGoal =
         goal ||
@@ -174,7 +174,7 @@ export function createInitialStateV3(
 /**
  * Check if state indicates task is complete
  */
-export function isTaskComplete(state: AgentStateV3): boolean {
+export function isTaskComplete(state: AgentState): boolean {
     return (
         state.isComplete ||
         state.status === 'complete' ||
@@ -185,8 +185,8 @@ export function isTaskComplete(state: AgentStateV3): boolean {
 /**
  * Get a summary of the current state
  */
-export function getStateSummary(state: AgentStateV3): {
-    status: AgentStatusV3;
+export function getStateSummary(state: AgentState): {
+    status: AgentStatus;
     iterationCount: number;
     outputCount: number;
     artifactCount: number;

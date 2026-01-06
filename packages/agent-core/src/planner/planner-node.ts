@@ -257,14 +257,6 @@ export function createPlannerNode(config: PlannerNodeConfig) {
                     lastActionResult,
                     conversationSummary: state.conversationSummary || undefined,
                     messages: coercedHistory,
-                    memoryContext: state.memoryContext
-                        ? {
-                              contextSummary:
-                                  state.memoryContext.contextSummary,
-                              relevantFacts: state.memoryContext.relevantFacts,
-                              recentTasks: state.memoryContext.recentTasks,
-                          }
-                        : undefined,
                 },
                 PLANNER_SYSTEM_PROMPT
             );

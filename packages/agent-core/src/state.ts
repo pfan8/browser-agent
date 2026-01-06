@@ -11,20 +11,6 @@ import { BaseMessage } from '@langchain/core/messages';
 import { type TraceContext } from './tracing';
 
 /**
- * Memory context injected from long-term memory
- */
-export interface MemoryContext {
-    /** User preferences summary */
-    userPreferences?: string;
-    /** Relevant facts for the current task */
-    relevantFacts?: string[];
-    /** Recent task summaries */
-    recentTasks?: string[];
-    /** Full context summary for prompt injection */
-    contextSummary?: string;
-}
-
-/**
  * Variable summary for prompt injection
  * Used to inform LLM about available variables in state
  */
@@ -372,12 +358,6 @@ export const AgentStateAnnotation = Annotation.Root({
     executionMode: Annotation<ExecutionMode>({
         reducer: (_, newValue) => newValue,
         default: () => 'iterative',
-    }),
-
-    // Long-term memory context
-    memoryContext: Annotation<MemoryContext | null>({
-        reducer: (_, newValue) => newValue,
-        default: () => null,
     }),
 
     // Session/thread ID for session continuity

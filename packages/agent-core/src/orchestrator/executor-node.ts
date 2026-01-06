@@ -7,10 +7,10 @@
 
 import type { IBrowserAdapter } from '@chat-agent/browser-adapter';
 import { ChatAnthropic } from '@langchain/anthropic';
-import type { AgentStateV3 } from './state';
+import type { AgentState } from './state';
 import type {
-    ISubAgentV3,
-    ISubAgentRegistryV3,
+    ISubAgent,
+    ISubAgentRegistry,
     SubAgentContext,
     SubAgentResult,
 } from '../multimodal';
@@ -28,7 +28,7 @@ const log = createAgentLogger('ExecutorNode');
  */
 export interface ExecutorNodeConfig {
     /** SubAgent registry */
-    subAgentRegistry: ISubAgentRegistryV3;
+    subAgentRegistry: ISubAgentRegistry;
     /** Browser adapter */
     browserAdapter: IBrowserAdapter;
     /** Artifact manager */
@@ -71,7 +71,7 @@ export function createExecutorNode(config: ExecutorNodeConfig) {
     }
     const llm = new ChatAnthropic(llmOptions);
 
-    return async (state: AgentStateV3): Promise<Partial<AgentStateV3>> => {
+    return async (state: AgentState): Promise<Partial<AgentState>> => {
         const traceContext = state.traceContext;
         const timer = startTimer(log, 'executor', traceContext ?? undefined);
 
@@ -181,8 +181,8 @@ export function createExecutorNode(config: ExecutorNodeConfig) {
  * Execute SubAgent with timeout
  */
 async function executeWithTimeout(
-    subAgent: ISubAgentV3,
-    request: Parameters<ISubAgentV3['execute']>[0],
+    subAgent: ISubAgent,
+    request: Parameters<ISubAgent['execute']>[0],
     context: SubAgentContext,
     timeout: number
 ): Promise<SubAgentResult> {
@@ -237,7 +237,7 @@ function createErrorResult(error: string, duration: number): SubAgentResult {
  * - Otherwise, continue to orchestrator (shouldn't happen)
  */
 export function routeAfterOrchestrator(
-    state: AgentStateV3
+    state: AgentState
 ): 'executor' | 'end' {
     if (state.isComplete || state.status === 'error') {
         return 'end';
@@ -256,7 +256,7 @@ export function routeAfterOrchestrator(
  * - Always return to orchestrator for next decision
  */
 export function routeAfterExecutor(
-    _state: AgentStateV3
+    _state: AgentState
 ): 'orchestrator' {
     return 'orchestrator';
 }

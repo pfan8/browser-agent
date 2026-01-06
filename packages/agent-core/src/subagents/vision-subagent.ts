@@ -1,5 +1,5 @@
 /**
- * Vision SubAgent V3
+ * Vision SubAgent
  *
  * Handles image analysis using vision-capable LLMs.
  * Can analyze screenshots, uploaded images, and provide structured descriptions.
@@ -74,7 +74,7 @@ Output format depends on the task:
 /**
  * Vision SubAgent V3 implementation
  */
-export class VisionSubAgentV3 extends BaseSubAgent {
+export class VisionSubAgent extends BaseSubAgent {
     readonly name = 'vision';
     readonly description =
         'Analyzes images and screenshots using vision AI for UI understanding';
@@ -237,9 +237,9 @@ export class VisionSubAgentV3 extends BaseSubAgent {
 /**
  * Create a Vision SubAgent V3 instance
  */
-export function createVisionSubAgentV3(
+export function createVisionSubAgent(
     config?: VisionSubAgentConfig
-): VisionSubAgentV3 {
-    return new VisionSubAgentV3(config);
+): VisionSubAgent {
+    return new VisionSubAgent(config);
 }
 

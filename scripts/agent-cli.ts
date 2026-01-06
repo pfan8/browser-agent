@@ -16,7 +16,6 @@ import * as readline from 'readline';
 import { 
   BrowserAgent, 
   createBrowserTools, 
-  createCheckpointer,
   type AgentState,
   type AgentConfig,
 } from '../packages/agent-core/src';
@@ -388,9 +387,6 @@ ${colors.cyan}╔═════════════════════
     const tools = createBrowserTools(this.browserAdapter);
     log('[CLI]', colors.dim, `Created ${tools.length} browser tools`);
 
-    // Create checkpointer
-    const checkpointer = createCheckpointer({ type: 'memory' });
-
     // Create agent
     this.agent = new BrowserAgent({
       browserAdapter: this.browserAdapter,
@@ -408,7 +404,7 @@ ${colors.cyan}╔═════════════════════
       },
     });
 
-    this.agent.compile(checkpointer);
+    this.agent.compile();
     log('[CLI]', colors.green, 'Agent initialized successfully');
   }
 

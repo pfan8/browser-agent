@@ -17,7 +17,6 @@ import {
 } from '@chat-agent/browser-adapter';
 import {
     BrowserAgent,
-    PersistentCheckpointer,
     configureAgentLogger,
     type StructuredLogEntry,
 } from '@chat-agent/agent-core';
@@ -221,23 +220,6 @@ function getBrowserAdapter(): IBrowserAdapter {
     return browserAdapter;
 }
 
-// Persistent checkpointer instance (uses LangGraph's SqliteSaver)
-let persistentCheckpointer: PersistentCheckpointer | null = null;
-
-// Get or create persistent checkpointer
-function getPersistentCheckpointer(): PersistentCheckpointer {
-    if (!persistentCheckpointer) {
-        const dataPath = app.getPath('userData');
-        const dbPath = require('path').join(dataPath, 'data', 'checkpoints.db');
-        persistentCheckpointer = new PersistentCheckpointer(dbPath);
-        log.info(
-            'Persistent checkpointer initialized (LangGraph SqliteSaver)',
-            { dbPath }
-        );
-    }
-    return persistentCheckpointer;
-}
-
 // Initialize agent
 function getAgent(): BrowserAgent {
     const savedSettings = settingsStore.getLLMSettings();
@@ -258,16 +240,6 @@ function getAgent(): BrowserAgent {
         );
 
         const adapter = getBrowserAdapter();
-        const checkpointer = getPersistentCheckpointer();
-
-        // Memory database path
-        const dataPath = app.getPath('userData');
-        const memoryDbPath = require('path').join(
-            dataPath,
-            'data',
-            'memory.db'
-        );
-
         const beadsClient = getBeadsClient();
 
         agent = new BrowserAgent({
@@ -282,15 +254,12 @@ function getAgent(): BrowserAgent {
                 enableScreenshots: false,
                 executionMode,
             },
-            memoryDbPath,
             beadsClient,
         });
 
-        agent.compile(checkpointer);
+        agent.compile();
         agentInitialized = true;
-        log.info(
-            'Agent initialized with SQLite persistence and long-term memory'
-        );
+        log.info('Agent initialized');
     }
 
     return agent;
@@ -560,7 +529,6 @@ app.whenReady().then(async () => {
         getMainWindow: () => mainWindow,
         getAgent,
         isQuitting: () => isQuitting,
-        getPersistentCheckpointer,
         // Browser context
         getBrowserAdapter,
         operationRecorder,

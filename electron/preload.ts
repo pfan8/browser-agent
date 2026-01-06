@@ -46,45 +46,8 @@ interface AgentState {
     status: AgentStatus;
     currentTask: string | null;
     plan: TaskPlan | null;
-    memory: {
-        conversation: ConversationMessage[];
-        workingMemory: Record<string, unknown>;
-        facts: unknown[];
-    };
-    checkpoints: CheckpointInfo[];
     createdAt: string;
     updatedAt: string;
-}
-
-interface ConversationMessage {
-    id: string;
-    role: 'user' | 'agent' | 'system';
-    content: string;
-    timestamp: string;
-    metadata?: Record<string, unknown>;
-}
-
-interface CheckpointInfo {
-    id: string;
-    threadId: string;
-    createdAt: string;
-    step: number;
-    messagePreview?: string;
-    isUserMessage: boolean;
-    parentCheckpointId?: string;
-    // Legacy fields for backward compatibility
-    name?: string;
-    description?: string;
-    stepIndex?: number;
-    isAutoSave?: boolean;
-}
-
-interface CheckpointState {
-    messages: ConversationMessage[];
-    goal?: string;
-    status?: string;
-    isComplete?: boolean;
-    actionHistory?: unknown[];
 }
 
 type ExecutionMode = 'iterative' | 'script';
@@ -220,87 +183,6 @@ interface ElectronAPI {
             } | null;
         }>;
         getState: () => Promise<AgentState>;
-
-        // Sessions
-        createSession: (
-            name: string,
-            description?: string
-        ) => Promise<{
-            success: boolean;
-            session?: { id: string; name: string };
-            error?: string;
-        }>;
-        loadSession: (
-            sessionId: string
-        ) => Promise<{ success: boolean; error?: string }>;
-        listSessions: () => Promise<
-            Array<{
-                id: string;
-                name: string;
-                description?: string;
-                messageCount?: number;
-                createdAt: string;
-                updatedAt: string;
-            }>
-        >;
-        deleteSession: (sessionId: string) => Promise<boolean>;
-        getCurrentSession: () => Promise<string | null>;
-
-        // Checkpoints (LangGraph Native)
-        createCheckpoint: (
-            name: string,
-            description?: string
-        ) => Promise<{
-            success: boolean;
-            checkpointId?: string;
-            error?: string;
-        }>;
-        listCheckpoints: (threadId?: string) => Promise<CheckpointInfo[]>;
-        getCheckpointHistory: (threadId: string) => Promise<CheckpointInfo[]>;
-        restoreCheckpoint: (
-            threadId: string,
-            checkpointId: string
-        ) => Promise<{
-            success: boolean;
-            state?: CheckpointState;
-            error?: string;
-        }>;
-        getStateAtCheckpoint: (
-            threadId: string,
-            checkpointId: string
-        ) => Promise<CheckpointState | null>;
-        restoreLatest: (
-            threadId?: string
-        ) => Promise<{
-            success: boolean;
-            state?: CheckpointState | null;
-            error?: string;
-        }>;
-        deleteCheckpoint: (checkpointId: string) => Promise<boolean>;
-
-        // Memory & History
-        getConversation: (
-            sessionIdOrLimit?: string | number,
-            limit?: number
-        ) => Promise<ConversationMessage[]>;
-        clearMemory: () => Promise<{ success: boolean; error?: string }>;
-        getMemorySummary: () => Promise<string>;
-        getMemoryStats: () => Promise<{
-            totalMemories: number;
-            byNamespace: Record<string, number>;
-        } | null>;
-        getRecentTasks: (
-            limit?: number
-        ) => Promise<
-            Array<{ goal: string; summary: string; success: boolean }>
-        >;
-        saveFact: (fact: {
-            content: string;
-            category?: string;
-        }) => Promise<{ success: boolean; error?: string }>;
-        getFacts: (
-            category?: string
-        ) => Promise<Array<{ content: string; category?: string }>>;
 
         // Chat & Misc
         chat: (
@@ -478,58 +360,6 @@ const electronAPI: ElectronAPI = {
         stopTask: () => ipcRenderer.invoke('agent-stop-task'),
         getStatus: () => ipcRenderer.invoke('agent-get-status'),
         getState: () => ipcRenderer.invoke('agent-get-state'),
-
-        // Sessions
-        createSession: (name: string, description?: string) =>
-            ipcRenderer.invoke('agent-create-session', name, description),
-        loadSession: (sessionId: string) =>
-            ipcRenderer.invoke('agent-load-session', sessionId),
-        listSessions: () => ipcRenderer.invoke('agent-list-sessions'),
-        deleteSession: (sessionId: string) =>
-            ipcRenderer.invoke('agent-delete-session', sessionId),
-        getCurrentSession: () =>
-            ipcRenderer.invoke('agent-get-current-session'),
-
-        // Checkpoints (LangGraph Native)
-        createCheckpoint: (name: string, description?: string) =>
-            ipcRenderer.invoke('agent-create-checkpoint', name, description),
-        listCheckpoints: (threadId?: string) =>
-            ipcRenderer.invoke('agent-list-checkpoints', threadId),
-        getCheckpointHistory: (threadId: string) =>
-            ipcRenderer.invoke('agent-get-checkpoint-history', threadId),
-        restoreCheckpoint: (threadId: string, checkpointId: string) =>
-            ipcRenderer.invoke(
-                'agent-restore-checkpoint',
-                threadId,
-                checkpointId
-            ),
-        getStateAtCheckpoint: (threadId: string, checkpointId: string) =>
-            ipcRenderer.invoke(
-                'agent-get-state-at-checkpoint',
-                threadId,
-                checkpointId
-            ),
-        restoreLatest: (threadId?: string) =>
-            ipcRenderer.invoke('agent-restore-latest', threadId),
-        deleteCheckpoint: (checkpointId: string) =>
-            ipcRenderer.invoke('agent-delete-checkpoint', checkpointId),
-
-        // Memory & History
-        getConversation: (sessionIdOrLimit?: string | number, limit?: number) =>
-            ipcRenderer.invoke(
-                'agent-get-conversation',
-                sessionIdOrLimit,
-                limit
-            ),
-        clearMemory: () => ipcRenderer.invoke('agent-clear-memory'),
-        getMemorySummary: () => ipcRenderer.invoke('agent-get-memory-summary'),
-        getMemoryStats: () => ipcRenderer.invoke('agent-get-memory-stats'),
-        getRecentTasks: (limit?: number) =>
-            ipcRenderer.invoke('agent-get-recent-tasks', limit),
-        saveFact: (fact: { content: string; category?: string }) =>
-            ipcRenderer.invoke('agent-save-fact', fact),
-        getFacts: (category?: string) =>
-            ipcRenderer.invoke('agent-get-facts', category),
 
         // Chat & Misc
         chat: (message: string) => ipcRenderer.invoke('agent-chat', message),

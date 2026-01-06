@@ -50,13 +50,12 @@ export class ContextManager {
     input: BuildContextInput,
     systemRules: string
   ): Promise<BuildContextResult> {
-    const { goal, lastActionResult, messages, memoryContext, conversationSummary } = input;
+    const { goal, lastActionResult, messages, conversationSummary } = input;
 
     log.debug('Building context', {
       goal: goal.slice(0, 50),
       messageCount: messages.length,
       hasExistingSummary: !!conversationSummary,
-      hasMemoryContext: !!memoryContext,
     });
 
     // Determine if we need to summarize
@@ -91,10 +90,9 @@ export class ContextManager {
       recentMessages = messages.slice(-this.config.maxRecentMessages);
     }
 
-    // Build L1: Context summary (memory + conversation summary)
+    // Build L1: Context summary (conversation summary)
     const l1ContextSummary = this.buildL1ContextSummary(
-      contextSummaryText,
-      memoryContext
+      contextSummaryText
     );
 
     // Build L2: Current task message (simplified)
@@ -122,33 +120,15 @@ export class ContextManager {
   }
 
   /**
-   * Build L1: Context summary combining memory and conversation summary
+   * Build L1: Context summary from conversation summary
    */
   private buildL1ContextSummary(
-    conversationSummary: string,
-    memoryContext?: BuildContextInput['memoryContext']
+    conversationSummary: string
   ): string {
-    const parts: string[] = [];
-
-    // Add memory context
-    if (memoryContext) {
-      if (memoryContext.contextSummary) {
-        parts.push(`## User Context\n${memoryContext.contextSummary}`);
-      } else if (memoryContext.relevantFacts && memoryContext.relevantFacts.length > 0) {
-        parts.push(`## Relevant Facts\n${memoryContext.relevantFacts.slice(0, 3).map(f => `- ${f}`).join('\n')}`);
-      }
-
-      if (memoryContext.recentTasks && memoryContext.recentTasks.length > 0) {
-        parts.push(`## Recent Tasks\n${memoryContext.recentTasks.slice(0, 3).map(t => `- ${t}`).join('\n')}`);
-      }
-    }
-
-    // Add conversation summary
     if (conversationSummary) {
-      parts.push(`## Conversation Summary\n${conversationSummary}`);
+      return `## Conversation Summary\n${conversationSummary}`;
     }
-
-    return parts.join('\n\n');
+    return '';
   }
 
   /**

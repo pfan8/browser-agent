@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { 
   BrowserAgent, 
-  createAgentGraph, 
+  createGraph,
   AgentStateAnnotation,
   // State utilities
   computeActionSignature,
@@ -25,6 +25,7 @@ import {
   buildFailureReport,
   DEFAULT_AGENT_CONFIG,
   type AgentState,
+  type LegacyAgentState,
   type Observation,
   type AgentAction,
 } from '../src';
@@ -159,14 +160,14 @@ describe('Agent Graph Creation', () => {
   });
   
   it('should create a graph', () => {
-    const graph = createAgentGraph({
+    const { graph, registry, artifactManager } = createGraph({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
+      apiKey: 'test-key',
     });
     
     expect(graph).toBeDefined();
+    expect(registry).toBeDefined();
+    expect(artifactManager).toBeDefined();
   });
 });
 
@@ -180,9 +181,7 @@ describe('BrowserAgent', () => {
   it('should create an agent instance', () => {
     const agent = new BrowserAgent({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
+      llmConfig: { apiKey: 'test-key' },
     });
     
     expect(agent).toBeDefined();
@@ -192,9 +191,7 @@ describe('BrowserAgent', () => {
   it('should compile without checkpointer', () => {
     const agent = new BrowserAgent({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
+      llmConfig: { apiKey: 'test-key' },
     });
     
     agent.compile();
@@ -205,9 +202,7 @@ describe('BrowserAgent', () => {
   it('should throw if executing without compile', async () => {
     const agent = new BrowserAgent({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
+      llmConfig: { apiKey: 'test-key' },
     });
     
     await expect(agent.executeTask('test goal')).rejects.toThrow('Graph not compiled');
@@ -216,12 +211,8 @@ describe('BrowserAgent', () => {
   it('should return config', () => {
     const agent = new BrowserAgent({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
-      agentConfig: {
-        maxIterations: 10,
-      },
+      llmConfig: { apiKey: 'test-key' },
+      agentConfig: { maxIterations: 10 },
     });
     
     const config = agent.getConfig();
@@ -232,9 +223,7 @@ describe('BrowserAgent', () => {
   it('should update config', () => {
     const agent = new BrowserAgent({
       browserAdapter: mockAdapter,
-      llmConfig: {
-        apiKey: 'test-key',
-      },
+      llmConfig: { apiKey: 'test-key' },
     });
     
     agent.updateConfig({ maxIterations: 5 });

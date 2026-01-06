@@ -1,5 +1,5 @@
 /**
- * CodeAct SubAgent V3
+ * CodeAct SubAgent
  *
  * Browser automation SubAgent that uses a ReAct loop to generate
  * and execute Playwright code. Supports file-based script artifacts.
@@ -64,7 +64,7 @@ const DEFAULT_CONFIG: Required<CodeActSubAgentConfig> = {
 /**
  * CodeAct SubAgent V3 implementation
  */
-export class CodeActSubAgentV3 extends BaseSubAgent {
+export class CodeActSubAgent extends BaseSubAgent {
     readonly name = 'codeact';
     readonly description =
         'Executes browser automation tasks using Playwright code generation';
@@ -98,7 +98,7 @@ export class CodeActSubAgentV3 extends BaseSubAgent {
         const startTime = Date.now();
         const instruction = extractText(request.input);
 
-        log.info('[CODEACT-V3] Starting execution', {
+        log.info('[CODEACT] Starting execution', {
             instruction: instruction.substring(0, 100),
             maxIterations: this.config.maxReactIterations,
         });
@@ -160,7 +160,7 @@ export class CodeActSubAgentV3 extends BaseSubAgent {
             const duration = Date.now() - startTime;
             const errorMsg =
                 error instanceof Error ? error.message : String(error);
-            log.error('[CODEACT-V3] Execution error', { error: errorMsg });
+            log.error('[CODEACT] Execution error', { error: errorMsg });
             return this.createErrorResult(errorMsg, duration);
         }
     }
@@ -181,7 +181,7 @@ export class CodeActSubAgentV3 extends BaseSubAgent {
             iteration <= this.config.maxReactIterations;
             iteration++
         ) {
-            log.info('[CODEACT-V3] ReAct iteration', {
+            log.info('[CODEACT] ReAct iteration', {
                 iteration,
                 maxIterations: this.config.maxReactIterations,
             });
@@ -235,7 +235,7 @@ export class CodeActSubAgentV3 extends BaseSubAgent {
                 result: toolResult,
             });
 
-            log.info('[CODEACT-V3] Tool executed', {
+            log.info('[CODEACT] Tool executed', {
                 iteration,
                 tool: toolCall.tool,
                 success: toolResult.success,
@@ -422,9 +422,9 @@ interface ReActLoopResult {
 /**
  * Create a CodeAct SubAgent V3 instance
  */
-export function createCodeActSubAgentV3(
+export function createCodeActSubAgent(
     config?: CodeActSubAgentConfig
-): CodeActSubAgentV3 {
-    return new CodeActSubAgentV3(config);
+): CodeActSubAgent {
+    return new CodeActSubAgent(config);
 }
 

@@ -7,9 +7,6 @@
 
 import { initSharedContext } from './shared';
 import { registerAgentHandlers } from './agent-handlers';
-import { registerCheckpointHandlers } from './checkpoint-handlers';
-import { registerSessionHandlers } from './session-handlers';
-import { registerMemoryHandlers, initMemoryHandlerContext } from './memory-handlers';
 import {
     registerBrowserHandlers,
     initBrowserHandlerContext,
@@ -28,7 +25,6 @@ interface HandlerContext {
     getMainWindow: () => BrowserWindow | null;
     getAgent: () => BrowserAgent;
     isQuitting: () => boolean;
-    getPersistentCheckpointer?: () => any;
     // Browser context
     getBrowserAdapter?: () => IBrowserAdapter;
     operationRecorder?: {
@@ -56,13 +52,6 @@ export function registerExtractedHandlers(context: HandlerContext): void {
     // Initialize shared context first
     initSharedContext(context);
 
-    // Initialize memory handler context if checkpointer provided
-    if (context.getPersistentCheckpointer) {
-        initMemoryHandlerContext({
-            getPersistentCheckpointer: context.getPersistentCheckpointer,
-        });
-    }
-
     // Initialize browser handler context if provided
     if (
         context.getBrowserAdapter &&
@@ -89,9 +78,6 @@ export function registerExtractedHandlers(context: HandlerContext): void {
 
     // Register handler groups
     registerAgentHandlers();
-    registerCheckpointHandlers();
-    registerSessionHandlers();
-    registerMemoryHandlers();
     registerBrowserHandlers();
     registerConfigHandlers();
     registerBeadsHandlers();
@@ -99,9 +85,6 @@ export function registerExtractedHandlers(context: HandlerContext): void {
 
 // Re-export individual registration functions for selective use
 export { registerAgentHandlers } from './agent-handlers';
-export { registerCheckpointHandlers } from './checkpoint-handlers';
-export { registerSessionHandlers } from './session-handlers';
-export { registerMemoryHandlers } from './memory-handlers';
 export { registerBrowserHandlers } from './browser-handlers';
 export { registerConfigHandlers } from './config-handlers';
 export { registerBeadsHandlers } from '../beads-handlers';

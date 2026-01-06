@@ -70,12 +70,6 @@ export interface BuildContextInput {
   conversationSummary?: string;
   /** Full message history */
   messages: BaseMessage[];
-  /** Memory context (user preferences, facts, etc.) */
-  memoryContext?: {
-    contextSummary?: string;
-    relevantFacts?: string[];
-    recentTasks?: string[];
-  };
 }
 
 /**

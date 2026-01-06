@@ -1,197 +1,366 @@
 /**
- * Agent Graph
+ * Unified Multimodal Orchestrator Graph
  *
- * Main LangGraph StateGraph definition for the browser automation agent.
- * Uses a simple two-layer architecture:
- * - Planner: High-level task planning (doesn't know Playwright)
- * - CodeAct: Code generation and execution (knows Playwright API)
+ * A simplified, LLM-driven graph architecture that:
+ * 1. Accepts multimodal input (text, images, audio, video)
+ * 2. Uses an Orchestrator to decide which SubAgent to call
+ * 3. Executes SubAgents in a loop until task completion
  *
- * Flow: START → planner → codeact → planner → codeact → ... → end
- * CodeAct returns execution results directly to Planner.
- *
- * The BrowserAgent class has been extracted to browser-agent.ts
+ * Architecture:
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │                                                             │
+ *   │    START ──► Orchestrator ──► Executor ──► Orchestrator ──► │
+ *   │                 │                              │            │
+ *   │                 └──── (when complete) ─────────┴───► END    │
+ *   │                                                             │
+ *   └─────────────────────────────────────────────────────────────┘
  */
 
 import { StateGraph, START, END } from '@langchain/langgraph';
 import type { IBrowserAdapter } from '@chat-agent/browser-adapter';
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
+
 import {
     AgentStateAnnotation,
     type AgentState,
-    type AgentConfig,
-    DEFAULT_AGENT_CONFIG,
-} from './state';
-import {
-    createPlannerNode,
-    createBeadsPlannerNode,
-    type PlannerNodeConfig,
-} from './planner';
-import { createCodeActNode, type CodeActNodeConfig } from './codeact';
-import { createRouterNode } from './router';
-import { type IBeadsClient } from './beads';
-import { createSubAgentRegistry, createCodeActSubAgent } from './sub-agents';
-import { createAgentLogger } from './tracing';
+    createInitialState,
+    createOrchestratorNode,
+    createExecutorNode,
+    routeAfterOrchestrator,
+    routeAfterExecutor,
+} from './orchestrator';
 
-// Create module logger for the graph
+import {
+    type ISubAgentRegistry,
+    createSubAgentRegistry,
+    createArtifactManager,
+    type ArtifactManager,
+    type MultimodalMessage,
+    createTextMessage,
+} from './multimodal';
+
+import {
+    createCodeActSubAgent,
+    createVisionSubAgent,
+} from './subagents';
+
+import {
+    createTraceContext,
+    createAgentLogger,
+    type TraceContext,
+} from './tracing';
+
 const log = createAgentLogger('Graph');
 
+// ============================================================
+// Configuration
+// ============================================================
+
 /**
- * Configuration for the agent graph
+ * Configuration for the V3 Graph
  */
-export interface AgentGraphConfig {
+export interface GraphConfig {
+    /** Browser adapter instance */
     browserAdapter: IBrowserAdapter;
-    llmConfig: PlannerNodeConfig & CodeActNodeConfig;
-    agentConfig?: Partial<AgentConfig>;
-    /** Path to memory database (enables long-term memory) */
-    memoryDbPath?: string;
-}
-
-/**
- * Configuration for the Beads-enabled agent graph
- */
-export interface BeadsAgentGraphConfig extends AgentGraphConfig {
-    /** Beads client for task management */
-    beadsClient: IBeadsClient;
-    /** Workspace path for Beads operations */
+    /** LLM API key */
+    apiKey: string;
+    /** LLM base URL */
+    baseUrl?: string;
+    /** LLM model */
+    model?: string;
+    /** Workspace path for artifacts */
     workspacePath?: string;
+    /** Maximum orchestrator iterations */
+    maxIterations?: number;
 }
 
 /**
- * Route function after planner node
- *
- * Planner decides the next action:
- * 1. Give next instruction → go to codeact
- * 2. Complete task → end
+ * Compiled graph instance
  */
-function routeAfterPlanner(state: AgentState): string {
-    if (state.status === 'error') {
-        return 'end';
-    }
-    if (state.isComplete) {
-        return 'end';
-    }
-    // If planner decided next step, go to codeact
-    if ((state as any).currentInstruction) {
-        return 'codeact';
-    }
-    // No instruction - this shouldn't happen, end with error
-    log.warn('Planner returned no instruction');
-    return 'end';
+export interface CompiledGraph {
+    /** Execute a task and return the final state */
+    executeTask(
+        input: string | MultimodalMessage,
+        options?: ExecuteOptions
+    ): Promise<AgentState>;
+
+    /** Stream execution events */
+    streamTask(
+        input: string | MultimodalMessage,
+        options?: ExecuteOptions
+    ): AsyncGenerator<GraphEvent, AgentState>;
 }
 
 /**
- * Creates the agent graph with Planner + CodeAct architecture
- *
- * Graph flow:
- * START → planner → codeact → planner → codeact → ... → END
+ * Execution options
  */
-export function createAgentGraph(graphConfig: AgentGraphConfig) {
-    const { browserAdapter, llmConfig, agentConfig } = graphConfig;
-    const config: AgentConfig = { ...DEFAULT_AGENT_CONFIG, ...agentConfig };
+export interface ExecuteOptions {
+    /** Thread ID for checkpointing */
+    threadId?: string;
+    /** Initial variables */
+    variables?: Record<string, unknown>;
+    /** Trace context */
+    traceContext?: TraceContext;
+}
 
-    // Create node functions
-    const plannerNode = createPlannerNode(llmConfig);
-    const codeActNode = createCodeActNode(browserAdapter, {
-        ...llmConfig,
-        mode: config.executionMode,
+/**
+ * Events emitted during streaming execution
+ */
+export interface GraphEvent {
+    /** Event type */
+    type: 'orchestrator' | 'executor' | 'complete' | 'error';
+    /** Current node name */
+    node: string;
+    /** State snapshot */
+    state: Partial<AgentState>;
+}
+
+// ============================================================
+// Graph Builder
+// ============================================================
+
+/**
+ * Create the V3 Graph
+ */
+export function createGraph(config: GraphConfig): {
+    graph: ReturnType<typeof buildGraph>;
+    registry: ISubAgentRegistry;
+    artifactManager: ArtifactManager;
+    compile: (checkpointer?: BaseCheckpointSaver) => CompiledGraph;
+} {
+    // Create artifact manager
+    const workspacePath = config.workspacePath || process.cwd();
+    const artifactManager = createArtifactManager(workspacePath);
+
+    // Create SubAgent registry and register default agents
+    const registry = createSubAgentRegistry();
+    registerDefaultSubAgents(registry, config);
+
+    // Build the graph
+    const graph = buildGraph(config, registry, artifactManager);
+
+    // Return graph with compile function
+    return {
+        graph,
+        registry,
+        artifactManager,
+        compile: (checkpointer?: BaseCheckpointSaver) => {
+            const compiled = checkpointer
+                ? graph.compile({ checkpointer })
+                : graph.compile();
+
+            return createCompiledWrapper(compiled, artifactManager);
+        },
+    };
+}
+
+/**
+ * Register default SubAgents
+ */
+function registerDefaultSubAgents(
+    registry: ISubAgentRegistry,
+    config: GraphConfig
+): void {
+    // CodeAct for browser automation
+    registry.register(createCodeActSubAgent());
+
+    // Vision for image analysis
+    registry.register(createVisionSubAgent());
+
+    log.info('[GRAPH] SubAgents registered', {
+        count: registry.getAll().length,
+        agents: registry.getAll().map((a) => a.name),
+    });
+}
+
+/**
+ * Build the state graph
+ */
+function buildGraph(
+    config: GraphConfig,
+    registry: ISubAgentRegistry,
+    artifactManager: ArtifactManager
+) {
+    // Create nodes
+    const orchestratorNode = createOrchestratorNode({
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        subAgentRegistry: registry,
+        maxIterations: config.maxIterations,
     });
 
-    // Build the graph: planner ↔ codeact loop
+    const executorNode = createExecutorNode({
+        subAgentRegistry: registry,
+        browserAdapter: config.browserAdapter,
+        artifactManager,
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        model: config.model,
+    });
+
+    // Build graph
     const graph = new StateGraph(AgentStateAnnotation)
-        .addNode('planner', plannerNode)
-        .addNode('codeact', codeActNode)
-        .addEdge(START, 'planner')
-        .addEdge('codeact', 'planner')
-        .addConditionalEdges('planner', routeAfterPlanner, {
-            codeact: 'codeact',
+        .addNode('orchestrator', orchestratorNode)
+        .addNode('executor', executorNode)
+        .addEdge(START, 'orchestrator')
+        .addConditionalEdges('orchestrator', routeAfterOrchestrator, {
+            executor: 'executor',
             end: END,
+        })
+        .addConditionalEdges('executor', routeAfterExecutor, {
+            orchestrator: 'orchestrator',
         });
 
     return graph;
 }
 
 /**
- * Route function after Beads planner node
+ * Create a wrapper around the compiled graph
  */
-function routeAfterBeadsPlanner(state: AgentState): string {
-    if (state.status === 'error') {
-        return 'end';
-    }
-    if (state.isComplete) {
-        return 'end';
-    }
-    // If planning is complete, go to router
-    if (state.beadsPlanningComplete) {
-        return 'router';
-    }
-    // Still planning - this shouldn't happen for single-shot planning
-    log.warn('Beads planner returned without completing planning');
-    return 'end';
+function createCompiledWrapper(
+    compiled: ReturnType<ReturnType<typeof buildGraph>['compile']>,
+    artifactManager: ArtifactManager
+): CompiledGraph {
+    return {
+        async executeTask(
+            input: string | MultimodalMessage,
+            options?: ExecuteOptions
+        ): Promise<AgentState> {
+            // Normalize input to MultimodalMessage
+            const inputMessage: MultimodalMessage =
+                typeof input === 'string'
+                    ? createTextMessage(input, 'user')
+                    : input;
+
+            // Create trace context
+            const traceContext =
+                options?.traceContext || createTraceContext('graph');
+
+            // Create initial state
+            const initialState = createInitialState(
+                inputMessage,
+                undefined,
+                traceContext
+            );
+
+            if (options?.variables) {
+                initialState.executionVariables = options.variables;
+            }
+
+            log.infoWithTrace(traceContext, '[GRAPH] Starting execution', {
+                goal: inputMessage.text?.substring(0, 100),
+                threadId: options?.threadId,
+            });
+
+            // Execute graph
+            const config = options?.threadId
+                ? { configurable: { thread_id: options.threadId } }
+                : undefined;
+
+            const result = await compiled.invoke(initialState, config);
+
+            log.infoWithTrace(traceContext, '[GRAPH] Execution complete', {
+                isComplete: result.isComplete,
+                status: result.status,
+                artifactCount: result.artifacts?.length || 0,
+            });
+
+            return result as AgentState;
+        },
+
+        async *streamTask(
+            input: string | MultimodalMessage,
+            options?: ExecuteOptions
+        ): AsyncGenerator<GraphEvent, AgentState> {
+            // Normalize input
+            const inputMessage: MultimodalMessage =
+                typeof input === 'string'
+                    ? createTextMessage(input, 'user')
+                    : input;
+
+            // Create trace context
+            const traceContext =
+                options?.traceContext || createTraceContext('graph');
+
+            // Create initial state
+            const initialState = createInitialState(
+                inputMessage,
+                undefined,
+                traceContext
+            );
+
+            if (options?.variables) {
+                initialState.executionVariables = options.variables;
+            }
+
+            // Stream graph execution
+            const config = options?.threadId
+                ? { configurable: { thread_id: options.threadId } }
+                : undefined;
+
+            let finalState: AgentState | null = null;
+
+            for await (const event of await compiled.stream(
+                initialState,
+                config
+            )) {
+                // Extract node name and state from event
+                const [nodeName, nodeState] = Object.entries(event)[0] as [
+                    string,
+                    Partial<AgentState>
+                ];
+
+                // Emit event
+                yield {
+                    type:
+                        nodeName === 'orchestrator'
+                            ? 'orchestrator'
+                            : 'executor',
+                    node: nodeName,
+                    state: nodeState,
+                };
+
+                // Track final state
+                if (nodeState) {
+                    finalState = {
+                        ...(finalState || {}),
+                        ...nodeState,
+                    } as AgentState;
+                }
+            }
+
+            // Return final state
+            if (!finalState) {
+                throw new Error('No final state from graph execution');
+            }
+
+            return finalState;
+        },
+    };
 }
 
-/**
- * Route function after router node
- */
-function routeAfterRouter(state: AgentState): string {
-    if (state.status === 'error') {
-        return 'planner'; // Let planner handle errors
-    }
-    if (state.isComplete) {
-        return 'end';
-    }
-    // Continue routing
-    return 'planner';
-}
+// ============================================================
+// Convenience Exports
+// ============================================================
 
-/**
- * Creates the Beads-enabled agent graph
- *
- * Graph flow:
- * START → beads-planner (create tasks) → router (dispatch) → beads-planner (check) → router → ... → END
- */
-export function createBeadsAgentGraph(graphConfig: BeadsAgentGraphConfig) {
-    const { browserAdapter, llmConfig, agentConfig, beadsClient } = graphConfig;
-    const config: AgentConfig = { ...DEFAULT_AGENT_CONFIG, ...agentConfig };
+export {
+    AgentStateAnnotation,
+    type AgentState,
+    type AgentStatus,
+} from './orchestrator';
 
-    // Create sub-agent registry and register CodeAct
-    const subAgentRegistry = createSubAgentRegistry();
-    subAgentRegistry.register(
-        createCodeActSubAgent({
-            browserAdapter,
-            apiKey: llmConfig.apiKey,
-            baseUrl: llmConfig.baseUrl,
-            model: llmConfig.model,
-        })
-    );
+export {
+    type MultimodalMessage,
+    type ContentBlock,
+    type ArtifactRef,
+    createTextMessage,
+    createMultimodalMessage,
+} from './multimodal';
 
-    // Create node functions
-    const beadsPlannerNode = createBeadsPlannerNode({
-        beadsClient,
-        ...llmConfig,
-    });
-
-    const routerNode = createRouterNode({
-        beadsClient,
-        subAgentRegistry,
-        enableMerging: true,
-        maxMergeSize: 5,
-    });
-
-    // Build the graph: beads-planner ↔ router loop
-    const graph = new StateGraph(AgentStateAnnotation)
-        .addNode('planner', beadsPlannerNode)
-        .addNode('router', routerNode)
-        .addEdge(START, 'planner')
-        .addConditionalEdges('planner', routeAfterBeadsPlanner, {
-            router: 'router',
-            end: END,
-        })
-        .addConditionalEdges('router', routeAfterRouter, {
-            planner: 'planner',
-            end: END,
-        });
-
-    return graph;
-}
-
-// Re-export BrowserAgent and related types from its own module
-export { BrowserAgent, type BrowserAgentConfig } from './browser-agent';
+export {
+    type ISubAgent,
+    type ISubAgentRegistry,
+    type SubAgentRequest,
+    type SubAgentResult,
+} from './multimodal';

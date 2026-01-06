@@ -44,13 +44,13 @@ export type {
     ArtifactEvent,
     PartialResultEvent,
     SubAgentContext,
-    ISubAgentV3,
-    ISubAgentRegistryV3,
+    ISubAgent,
+    ISubAgentRegistry,
 } from './subagent-types';
 
 export {
     BaseSubAgent,
-    SubAgentRegistryV3,
-    createSubAgentRegistryV3,
+    SubAgentRegistry,
+    createSubAgentRegistry,
 } from './subagent-types';
 
