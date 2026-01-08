@@ -560,7 +560,7 @@ export function useReActAgent(
 
         try {
             await window.electronAPI.agent.stopTask();
-            addMessage('system', '⏹️ 任务已停止', 'success');
+            // addMessage('system', '⏹️ 任务已停止', 'success');
             setIsRunning(false);
             setIsProcessing(false);
             await refreshStatus();

@@ -234,6 +234,10 @@ export function parseCodeActResponse(response: string): CodeActDecision | null {
  */
 export const CODEACT_REACT_SYSTEM_PROMPT = `You are a browser automation agent that completes tasks by calling tools.
 
+## CRITICAL: Response Format
+**You MUST ALWAYS respond with a SINGLE JSON object. NEVER respond with plain text.**
+**Every response MUST be valid JSON with a "tool" field.**
+
 ## Available Tools
 
 ### 1. runCode
@@ -279,20 +283,28 @@ Get data from execution state.
 - target: "all" (all variables), "keys" (variable names only), "single" (one variable by name)
 
 ### 4. finish
-Complete the task and return the result.
+**IMPORTANT: When the task is complete, you MUST call finish. Do NOT respond with plain text.**
 \`\`\`json
-{"tool": "finish", "args": {"result": "task result description"}, "thought": "summary"}
+{"tool": "finish", "args": {"result": "description of what was accomplished"}, "thought": "task complete"}
 \`\`\`
 
-## Response Format (JSON only)
-Always respond with a single JSON object selecting ONE tool to call.
+## Response Format
+**ONLY respond with a single JSON object. NO plain text. NO markdown. NO explanations outside JSON.**
+
+Example valid responses:
+- {"tool": "runCode", "args": {"code": "..."}, "thought": "..."}
+- {"tool": "finish", "args": {"result": "Task completed successfully"}, "thought": "done"}
+
+Example INVALID responses (DO NOT DO THIS):
+- "I have completed the task..." (plain text)
+- "Here is the result: {...}" (text before JSON)
 
 ## Rules
 1. Think step by step about what action to take
 2. Call runCode to execute browser operations
 3. Use summarizeResult if results are too large to reason about
 4. Use fetchData to inspect stored variables
-5. Call finish when the task is complete
+5. Call finish when the task is complete - ALWAYS use finish tool, never plain text
 6. If an operation fails, analyze the error and try a different approach`;
 
 /**
@@ -370,19 +382,22 @@ export interface ParsedToolCall {
 
 /**
  * Parse tool call from LLM response
+ * Includes fallback detection for natural language completion signals
  */
 export function parseToolCall(response: string): ParsedToolCall | null {
   try {
     // Try to extract JSON from response
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return null;
+      // Fallback: Check if LLM is signaling completion in natural language
+      return detectNaturalLanguageCompletion(response);
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
     
     if (!parsed.tool) {
-      return null;
+      // JSON found but no tool field - check for completion signals
+      return detectNaturalLanguageCompletion(response);
     }
 
     return {
@@ -391,7 +406,51 @@ export function parseToolCall(response: string): ParsedToolCall | null {
       thought: parsed.thought,
     };
   } catch {
-    return null;
+    // JSON parsing failed - check for completion signals in plain text
+    return detectNaturalLanguageCompletion(response);
   }
+}
+
+/**
+ * Detect if the LLM response indicates task completion in natural language
+ * This is a fallback for when the LLM doesn't follow JSON format
+ */
+function detectNaturalLanguageCompletion(response: string): ParsedToolCall | null {
+  const lowerResponse = response.toLowerCase();
+  
+  // Completion signal patterns (Chinese and English)
+  const completionPatterns = [
+    'task complete',
+    'task completed',
+    'successfully completed',
+    'successfully finished',
+    'i have completed',
+    'i\'ve completed',
+    'the task is done',
+    'task is complete',
+    'finished the task',
+    'completed successfully',
+    '任务完成',
+    '已完成',
+    '成功完成',
+    '执行完成',
+    '已成功',
+  ];
+  
+  const isCompletion = completionPatterns.some(pattern => 
+    lowerResponse.includes(pattern)
+  );
+  
+  if (isCompletion) {
+    // Extract a summary from the response (first 500 chars)
+    const summary = response.trim().substring(0, 500);
+    return {
+      tool: 'finish',
+      args: { result: summary },
+      thought: 'Auto-detected completion from natural language response',
+    };
+  }
+  
+  return null;
 }
 

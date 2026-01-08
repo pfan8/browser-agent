@@ -263,6 +263,7 @@ export class CodeActSubAgent extends BaseSubAgent {
 
     /**
      * Think step: Ask LLM for next action
+     * Includes retry mechanism if initial parsing fails
      */
     private async thinkStep(
         instruction: string,
@@ -270,9 +271,44 @@ export class CodeActSubAgent extends BaseSubAgent {
         toolHistory: ToolHistoryEntry[],
         llm: ChatAnthropic
     ): Promise<ToolCall | null> {
+        // First attempt
+        let toolCall = await this.askLLMForToolCall(
+            instruction,
+            variables,
+            toolHistory,
+            llm
+        );
+
+        if (toolCall) {
+            return toolCall;
+        }
+
+        // Retry with explicit format reminder
+        log.info('[CODEACT] Retrying with format reminder');
+        toolCall = await this.askLLMForToolCall(
+            instruction,
+            variables,
+            toolHistory,
+            llm,
+            'Your last response was not valid JSON. You MUST respond with ONLY a JSON object like: {"tool": "toolName", "args": {...}, "thought": "..."}. If the task is complete, use: {"tool": "finish", "args": {"result": "description"}, "thought": "done"}'
+        );
+
+        return toolCall;
+    }
+
+    /**
+     * Ask LLM for tool call with optional format reminder
+     */
+    private async askLLMForToolCall(
+        instruction: string,
+        variables: Record<string, unknown>,
+        toolHistory: ToolHistoryEntry[],
+        llm: ChatAnthropic,
+        formatReminder?: string
+    ): Promise<ToolCall | null> {
         const variableSummary = buildVariableSummary(variables);
 
-        const userMessage = buildReActUserMessage({
+        let userMessage = buildReActUserMessage({
             instruction,
             availableVariables: variableSummary,
             toolHistory: toolHistory.map((h) => ({
@@ -282,6 +318,11 @@ export class CodeActSubAgent extends BaseSubAgent {
                 summary: h.result.summary,
             })),
         });
+
+        // Add format reminder if provided
+        if (formatReminder) {
+            userMessage = `${formatReminder}\n\n${userMessage}`;
+        }
 
         const messages = [
             new SystemMessage(CODEACT_REACT_SYSTEM_PROMPT),
@@ -294,7 +335,23 @@ export class CodeActSubAgent extends BaseSubAgent {
                 ? response.content
                 : JSON.stringify(response.content);
 
-        return parseToolCall(responseText);
+        // Debug logging to diagnose parsing issues
+        log.debug('[CODEACT] LLM response', {
+            responsePreview: responseText.substring(0, 500),
+            responseLength: responseText.length,
+            hasFormatReminder: !!formatReminder,
+        });
+
+        const toolCall = parseToolCall(responseText);
+
+        if (!toolCall) {
+            log.warn('[CODEACT] Failed to parse tool call', {
+                responsePreview: responseText.substring(0, 300),
+                isRetry: !!formatReminder,
+            });
+        }
+
+        return toolCall;
     }
 
     /**
