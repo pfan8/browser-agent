@@ -72,7 +72,7 @@ Output format depends on the task:
 // ============================================================
 
 /**
- * Vision SubAgent V3 implementation
+ * Vision SubAgent implementation
  */
 export class VisionSubAgent extends BaseSubAgent {
     readonly name = 'vision';
@@ -235,7 +235,7 @@ export class VisionSubAgent extends BaseSubAgent {
 // ============================================================
 
 /**
- * Create a Vision SubAgent V3 instance
+ * Create a Vision SubAgent instance
  */
 export function createVisionSubAgent(
     config?: VisionSubAgentConfig

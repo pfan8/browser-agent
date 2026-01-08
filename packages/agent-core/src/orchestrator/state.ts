@@ -47,7 +47,7 @@ function mergeReducer<T extends Record<string, unknown>>(
 // ============================================================
 
 /**
- * Agent State Annotation V3
+ * Agent State Annotation
  *
  * Defines the state shape with proper reducers for LangGraph.
  */

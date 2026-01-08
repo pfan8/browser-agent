@@ -4,7 +4,7 @@
  * Handles agent task execution, stopping, and status queries.
  * Extracted from main.ts to maintain file size under 800 lines.
  *
- * Updated for V3 architecture (Orchestrator ↔ Executor pattern)
+ * Uses Orchestrator ↔ Executor pattern
  */
 
 import { ipcMain } from 'electron';
@@ -12,10 +12,10 @@ import type { AgentState } from '@chat-agent/agent-core';
 import { getAgent, safeSend, safeSerialize, log } from './shared';
 
 // ============================================================
-// V3 State Types (for type safety)
+// State Types (for type safety)
 // ============================================================
 
-interface V3SubAgentRequest {
+interface SubAgentRequestState {
     id: string;
     agentName: string;
     input: {
@@ -24,7 +24,7 @@ interface V3SubAgentRequest {
     };
 }
 
-interface V3SubAgentResult {
+interface SubAgentResultState {
     success: boolean;
     output: {
         text?: string;
@@ -35,12 +35,12 @@ interface V3SubAgentResult {
     artifacts?: Array<{ type: string; path: string }>;
 }
 
-interface V3AgentState {
+interface OrchestratorAgentState {
     goal?: string;
     status?: string;
     iterationCount?: number;
-    pendingSubAgentRequest?: V3SubAgentRequest;
-    lastSubAgentResult?: V3SubAgentResult;
+    pendingSubAgentRequest?: SubAgentRequestState;
+    lastSubAgentResult?: SubAgentResultState;
     outputMessages?: Array<{ text?: string }>;
     isComplete?: boolean;
     error?: string;
@@ -48,13 +48,13 @@ interface V3AgentState {
 }
 
 // ============================================================
-// V3 Step Tracker
+// Step Tracker
 // ============================================================
 
 /**
- * Track and emit agent step events for V3 architecture
+ * Track and emit agent step events for Orchestrator architecture
  */
-function createStepTrackerV3() {
+function createStepTracker() {
     let stepCounter = 0;
     const stepStartTimes = new Map<string, number>();
 
@@ -69,7 +69,7 @@ function createStepTrackerV3() {
          * Handle orchestrator node events
          * Extracts thinking/reasoning from the decision
          */
-        handleOrchestrator: (state: V3AgentState) => {
+        handleOrchestrator: (state: OrchestratorAgentState) => {
             const iterationCount = state.iterationCount || 0;
 
             // Complete pending orchestrator step if iteration changed
@@ -135,7 +135,7 @@ function createStepTrackerV3() {
          * Handle executor node events
          * Extracts execution details from SubAgent result
          */
-        handleExecutor: (state: V3AgentState) => {
+        handleExecutor: (state: OrchestratorAgentState) => {
             const request = state.pendingSubAgentRequest;
             const result = state.lastSubAgentResult;
 
@@ -259,8 +259,8 @@ export function registerAgentHandlers(): void {
 
             try {
                 const agentInstance = getAgent();
-                // Use V3 step tracker for the new architecture
-                const tracker = createStepTrackerV3();
+                // Create step tracker for the orchestrator architecture
+                const tracker = createStepTracker();
                 let finalState: AgentState | null = null;
 
                 const threadId = options?.threadId;
@@ -291,12 +291,12 @@ export function registerAgentHandlers(): void {
                         });
                     }
 
-                    // V3 Architecture: Handle orchestrator and executor nodes
+                    // Handle orchestrator and executor nodes
                     if (event.node === 'orchestrator') {
-                        tracker.handleOrchestrator(event.state as unknown as V3AgentState);
+                        tracker.handleOrchestrator(event.state as unknown as OrchestratorAgentState);
                     }
                     if (event.node === 'executor') {
-                        tracker.handleExecutor(event.state as unknown as V3AgentState);
+                        tracker.handleExecutor(event.state as unknown as OrchestratorAgentState);
                     }
 
                     // Merge state

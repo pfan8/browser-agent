@@ -4,7 +4,7 @@
  * Main agent class that wraps the LangGraph compiled graph.
  * Handles task execution for browser automation.
  *
- * Uses the V3 unified multimodal orchestrator architecture.
+ * Uses the unified multimodal orchestrator architecture.
  */
 
 import type { IBrowserAdapter } from '@chat-agent/browser-adapter';
@@ -41,13 +41,13 @@ export interface BrowserAgentConfig {
         model?: string;
     };
     agentConfig?: Partial<AgentConfig>;
-    beadsClient?: unknown; // Optional beads client (currently not used by V3 graph)
+    beadsClient?: unknown; // Optional beads client (currently not used by graph)
 }
 
 /**
  * Agent class that wraps the compiled graph
  *
- * Uses the V3 unified multimodal orchestrator architecture.
+ * Uses the unified multimodal orchestrator architecture.
  */
 export class BrowserAgent {
     private compiledGraph: CompiledGraph | null = null;
@@ -70,11 +70,11 @@ export class BrowserAgent {
             maxIterations: this.config.maxIterations,
         };
 
-        log.info('BrowserAgent initialized with V3 architecture');
+        log.info('BrowserAgent initialized');
     }
 
     /**
-     * Check if agent is using Beads mode (deprecated in V3)
+     * Check if agent is using Beads mode (deprecated)
      */
     isBeadsMode(): boolean {
         return false;

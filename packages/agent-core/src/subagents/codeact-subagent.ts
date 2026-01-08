@@ -62,7 +62,7 @@ const DEFAULT_CONFIG: Required<CodeActSubAgentConfig> = {
 // ============================================================
 
 /**
- * CodeAct SubAgent V3 implementation
+ * CodeAct SubAgent implementation
  */
 export class CodeActSubAgent extends BaseSubAgent {
     readonly name = 'codeact';
@@ -121,10 +121,7 @@ export class CodeActSubAgent extends BaseSubAgent {
             );
 
             // Save code artifact if enabled
-            if (
-                this.config.saveCodeArtifacts &&
-                generatedCodes.length > 0
-            ) {
+            if (this.config.saveCodeArtifacts && generatedCodes.length > 0) {
                 const combinedCode = this.formatGeneratedCode(
                     instruction,
                     generatedCodes
@@ -160,7 +157,9 @@ export class CodeActSubAgent extends BaseSubAgent {
                 );
             } else {
                 // Include execution details even on failure for debugging
-                const errorOutput = `${result.error || 'Unknown error'}\n\n${executionDetails}`;
+                const errorOutput = `${
+                    result.error || 'Unknown error'
+                }\n\n${executionDetails}`;
                 return {
                     success: false,
                     output: {
@@ -459,7 +458,9 @@ export class CodeActSubAgent extends BaseSubAgent {
                     }`
                 );
                 if (entry.result.summary) {
-                    lines.push(`   ↳ ${entry.result.summary.substring(0, 100)}`);
+                    lines.push(
+                        `   ↳ ${entry.result.summary.substring(0, 100)}`
+                    );
                 }
             } else if (toolName === 'fetchData') {
                 const target = entry.args.target || 'all';
@@ -483,10 +484,7 @@ export class CodeActSubAgent extends BaseSubAgent {
     /**
      * Format generated code into a single script artifact
      */
-    private formatGeneratedCode(
-        instruction: string,
-        codes: string[]
-    ): string {
+    private formatGeneratedCode(instruction: string, codes: string[]): string {
         const header = `/**
  * Generated Browser Automation Script
  * 
@@ -547,11 +545,10 @@ interface ReActLoopResult {
 // ============================================================
 
 /**
- * Create a CodeAct SubAgent V3 instance
+ * Create a CodeAct SubAgent instance
  */
 export function createCodeActSubAgent(
     config?: CodeActSubAgentConfig
 ): CodeActSubAgent {
     return new CodeActSubAgent(config);
 }
-

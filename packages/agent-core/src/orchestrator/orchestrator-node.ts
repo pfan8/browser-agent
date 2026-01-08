@@ -13,11 +13,7 @@ import type {
     ISubAgentRegistry,
     SubAgentRequest,
 } from '../multimodal';
-import {
-    extractText,
-    getContentTypes,
-    createTextMessage,
-} from '../multimodal';
+import { extractText, getContentTypes, createTextMessage } from '../multimodal';
 import { createAgentLogger, startTimer } from '../tracing';
 
 const log = createAgentLogger('OrchestratorNode');
@@ -140,7 +136,11 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
 
     return async (state: AgentState): Promise<Partial<AgentState>> => {
         const traceContext = state.traceContext;
-        const timer = startTimer(log, 'orchestrator', traceContext ?? undefined);
+        const timer = startTimer(
+            log,
+            'orchestrator',
+            traceContext ?? undefined
+        );
 
         log.infoWithTrace(traceContext!, '[ORCHESTRATOR] Starting decision', {
             hasLastResult: !!state.lastSubAgentResult,
@@ -177,9 +177,13 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
 
                 // Clear the pending result and continue
                 if (!result.success) {
-                    log.warnWithTrace(traceContext!, '[ORCHESTRATOR] SubAgent failed', {
-                        error: result.error,
-                    });
+                    log.warnWithTrace(
+                        traceContext!,
+                        '[ORCHESTRATOR] SubAgent failed',
+                        {
+                            error: result.error,
+                        }
+                    );
                 }
 
                 // Update state with result, then continue to decision
@@ -196,11 +200,7 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
             }
 
             // Make decision
-            const decision = await makeDecision(
-                state,
-                llm,
-                subAgentRegistry
-            );
+            const decision = await makeDecision(state, llm, subAgentRegistry);
 
             log.infoWithTrace(traceContext!, '[ORCHESTRATOR] Decision made', {
                 action: decision.action,
@@ -247,8 +247,11 @@ export function createOrchestratorNode(config: OrchestratorNodeConfig) {
                 error: 'Orchestrator could not determine next action',
             };
         } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            log.errorWithTrace(traceContext!, '[ORCHESTRATOR] Error', { error: errorMsg });
+            const errorMsg =
+                error instanceof Error ? error.message : String(error);
+            log.errorWithTrace(traceContext!, '[ORCHESTRATOR] Error', {
+                error: errorMsg,
+            });
             timer.end(`Error: ${errorMsg}`);
             return {
                 status: 'error',
@@ -283,9 +286,10 @@ async function makeDecision(
     ];
 
     const response = await llm.invoke(messages);
-    const responseText = typeof response.content === 'string'
-        ? response.content
-        : JSON.stringify(response.content);
+    const responseText =
+        typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content);
 
     // Parse response
     return parseDecision(responseText, state);
@@ -373,7 +377,9 @@ function parseDecision(
 
         if (parsed.action === 'call_subagent') {
             const request: SubAgentRequest = {
-                id: `req_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                id: `req_${Date.now()}_${Math.random()
+                    .toString(36)
+                    .slice(2, 6)}`,
                 agentName: parsed.agentName,
                 input: createTextMessage(parsed.inputText || '', 'system'),
                 options: parsed.options,
@@ -393,7 +399,9 @@ function parseDecision(
                     ...request.input,
                     content: [
                         ...request.input.content,
-                        ...state.inputMessage.content.filter((c) => c.type === 'image'),
+                        ...state.inputMessage.content.filter(
+                            (c) => c.type === 'image'
+                        ),
                     ],
                 };
             }
@@ -418,4 +426,3 @@ function parseDecision(
         };
     }
 }
-

@@ -57,7 +57,7 @@ const log = createAgentLogger('Graph');
 // ============================================================
 
 /**
- * Configuration for the V3 Graph
+ * Configuration for the Graph
  */
 export interface GraphConfig {
     /** Browser adapter instance */
@@ -120,7 +120,7 @@ export interface GraphEvent {
 // ============================================================
 
 /**
- * Create the V3 Graph
+ * Create the Graph
  */
 export function createGraph(config: GraphConfig): {
     graph: ReturnType<typeof buildGraph>;

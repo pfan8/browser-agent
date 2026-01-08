@@ -1,6 +1,6 @@
 /**
  * CodeAct Prompts
- * 
+ *
  * Prompts for the CodeAct Agent which knows Playwright API.
  * CodeAct translates high-level instructions into executable code.
  */
@@ -46,7 +46,6 @@ Prefer text-based selectors since users describe elements by visible text:
 2. Use try-catch for error handling
 3. For file operations: const fs = await import('fs/promises')
 4. Use state.xxx to store/retrieve data between steps`;
-
 
 /**
  * System prompt for CodeAct (Script Mode)
@@ -95,54 +94,58 @@ async function execute(context, browser, state) {
  * Previous attempt info for retry
  */
 export interface PreviousAttempt {
-  code: string;
-  error: string;
-  stackTrace?: string;
-  errorType?: string;
-  errorLine?: number;
-  logs?: string[];
+    code: string;
+    error: string;
+    stackTrace?: string;
+    errorType?: string;
+    errorLine?: number;
+    logs?: string[];
 }
 
 /**
  * Build user message for CodeAct
- * 
+ *
  * Note: CodeAct only needs the instruction from Planner.
  * It should NOT receive page state - its job is purely to translate
  * the instruction into Playwright code.
- * 
+ *
  * When retrying, it receives the previous failed code and error details
  * to help it self-repair.
- * 
+ *
  * Available variables are injected to inform LLM about state data.
  */
 export function buildCodeActUserMessage(params: {
-  instruction: string;
-  mode: 'iterative' | 'script';
-  previousAttempt?: PreviousAttempt;
-  availableVariables?: VariableSummary[];
+    instruction: string;
+    mode: 'iterative' | 'script';
+    previousAttempt?: PreviousAttempt;
+    availableVariables?: VariableSummary[];
 }): string {
-  const { instruction, mode, previousAttempt, availableVariables } = params;
+    const { instruction, mode, previousAttempt, availableVariables } = params;
 
-  let message = `## Instruction
+    let message = `## Instruction
 ${instruction}
 `;
 
-  // Inject available variables if any
-  if (availableVariables && availableVariables.length > 0) {
-    message += `
+    // Inject available variables if any
+    if (availableVariables && availableVariables.length > 0) {
+        message += `
 ## Current Variables in state
 ${formatAvailableVariables(availableVariables)}
 `;
-  }
+    }
 
-  // If retrying, include detailed error info for self-repair
-  if (previousAttempt) {
-    message += `
+    // If retrying, include detailed error info for self-repair
+    if (previousAttempt) {
+        message += `
 ## Previous Attempt Failed - Please Fix
 
 **Error Type:** ${previousAttempt.errorType || 'Unknown'}
 **Error Message:** ${previousAttempt.error}
-${previousAttempt.errorLine ? `**Error at Line:** ${previousAttempt.errorLine}` : ''}
+${
+    previousAttempt.errorLine
+        ? `**Error at Line:** ${previousAttempt.errorLine}`
+        : ''
+}
 
 **Failed Code:**
 \`\`\`javascript
@@ -150,51 +153,54 @@ ${previousAttempt.code}
 \`\`\`
 `;
 
-    if (previousAttempt.stackTrace) {
-      // Only include first few lines of stack trace
-      const stackLines = previousAttempt.stackTrace.split('\n').slice(0, 5).join('\n');
-      message += `
+        if (previousAttempt.stackTrace) {
+            // Only include first few lines of stack trace
+            const stackLines = previousAttempt.stackTrace
+                .split('\n')
+                .slice(0, 5)
+                .join('\n');
+            message += `
 **Stack Trace:**
 \`\`\`
 ${stackLines}
 \`\`\`
 `;
-    }
+        }
 
-    if (previousAttempt.logs && previousAttempt.logs.length > 0) {
-      message += `
+        if (previousAttempt.logs && previousAttempt.logs.length > 0) {
+            message += `
 **Console Logs:**
 ${previousAttempt.logs.slice(-5).join('\n')}
 `;
-    }
+        }
 
-    message += `
+        message += `
 **Please analyze the error and generate fixed code.**
 `;
-  }
+    }
 
-  if (mode === 'iterative') {
-    message += `
+    if (mode === 'iterative') {
+        message += `
 Generate code for this single step. Return { success: boolean, ... } with relevant state.`;
-  } else {
-    message += `
+    } else {
+        message += `
 Generate a complete script to accomplish the entire task. Handle all steps and errors.`;
-  }
+    }
 
-  return message;
+    return message;
 }
 
 /**
  * Format available variables for prompt injection
  */
 function formatAvailableVariables(variables: VariableSummary[]): string {
-  if (variables.length === 0) {
-    return '(no variables stored yet)';
-  }
-  
-  return variables
-    .map(v => `- state.${v.name}: ${v.type} = ${v.preview}`)
-    .join('\n');
+    if (variables.length === 0) {
+        return '(no variables stored yet)';
+    }
+
+    return variables
+        .map((v) => `- state.${v.name}: ${v.type} = ${v.preview}`)
+        .join('\n');
 }
 
 /**
@@ -202,26 +208,26 @@ function formatAvailableVariables(variables: VariableSummary[]): string {
  * Handles various response formats
  */
 export function parseCodeActResponse(response: string): CodeActDecision | null {
-  try {
-    // Try to extract JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return null;
-    }
+    try {
+        // Try to extract JSON from response
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+            return null;
+        }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    if (!parsed.code) {
-      return null;
-    }
+        const parsed = JSON.parse(jsonMatch[0]);
 
-    return {
-      thought: parsed.thought || '',
-      code: parsed.code,
-    };
-  } catch {
-    return null;
-  }
+        if (!parsed.code) {
+            return null;
+        }
+
+        return {
+            thought: parsed.thought || '',
+            code: parsed.code,
+        };
+    } catch {
+        return null;
+    }
 }
 
 // =============================================================================
@@ -330,73 +336,74 @@ When data is stored in state.xxx, you MUST:
  * Tool history entry for prompt context
  */
 export interface ToolHistoryEntry {
-  tool: string;
-  args: unknown;
-  success: boolean;
-  summary: string;
+    tool: string;
+    args: unknown;
+    success: boolean;
+    summary: string;
 }
 
 /**
  * Build user message for ReAct agent
  */
 export function buildReActUserMessage(params: {
-  instruction: string;
-  availableVariables?: VariableSummary[];
-  toolHistory?: ToolHistoryEntry[];
+    instruction: string;
+    availableVariables?: VariableSummary[];
+    toolHistory?: ToolHistoryEntry[];
 }): string {
-  const { instruction, availableVariables, toolHistory } = params;
+    const { instruction, availableVariables, toolHistory } = params;
 
-  let message = `## Task
+    let message = `## Task
 ${instruction}
 
 `;
 
-  // Include available variables
-  if (availableVariables && availableVariables.length > 0) {
-    message += `## Current State Variables
+    // Include available variables
+    if (availableVariables && availableVariables.length > 0) {
+        message += `## Current State Variables
 ${formatAvailableVariables(availableVariables)}
 
 `;
-  }
+    }
 
-  // Include tool execution history
-  if (toolHistory && toolHistory.length > 0) {
-    message += `## Previous Tool Executions
+    // Include tool execution history
+    if (toolHistory && toolHistory.length > 0) {
+        message += `## Previous Tool Executions
 ${formatToolHistory(toolHistory)}
 
 `;
-  }
+    }
 
-  message += `## Your Turn
+    message += `## Your Turn
 Analyze the task and tool history. Decide which tool to call next, or call "finish" if the task is complete.
 Respond with a single JSON object.`;
 
-  return message;
+    return message;
 }
 
 /**
  * Format tool history for prompt
  */
 function formatToolHistory(history: ToolHistoryEntry[]): string {
-  return history
-    .map((entry, i) => {
-      const status = entry.success ? '✓' : '✗';
-      const argsStr = typeof entry.args === 'string'
-        ? entry.args.slice(0, 100)
-        : JSON.stringify(entry.args).slice(0, 100);
-      return `${i + 1}. [${status}] ${entry.tool}(${argsStr}...)
+    return history
+        .map((entry, i) => {
+            const status = entry.success ? '✓' : '✗';
+            const argsStr =
+                typeof entry.args === 'string'
+                    ? entry.args.slice(0, 100)
+                    : JSON.stringify(entry.args).slice(0, 100);
+            return `${i + 1}. [${status}] ${entry.tool}(${argsStr}...)
    Result: ${entry.summary.slice(0, 200)}`;
-    })
-    .join('\n\n');
+        })
+        .join('\n\n');
 }
 
 /**
  * Parsed tool call from LLM response
  */
 export interface ParsedToolCall {
-  tool: string;
-  args: Record<string, unknown>;
-  thought?: string;
+    tool: string;
+    args: Record<string, unknown>;
+    thought?: string;
 }
 
 /**
@@ -404,72 +411,73 @@ export interface ParsedToolCall {
  * Includes fallback detection for natural language completion signals
  */
 export function parseToolCall(response: string): ParsedToolCall | null {
-  try {
-    // Try to extract JSON from response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // Fallback: Check if LLM is signaling completion in natural language
-      return detectNaturalLanguageCompletion(response);
-    }
+    try {
+        // Try to extract JSON from response
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+            // Fallback: Check if LLM is signaling completion in natural language
+            return detectNaturalLanguageCompletion(response);
+        }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    if (!parsed.tool) {
-      // JSON found but no tool field - check for completion signals
-      return detectNaturalLanguageCompletion(response);
-    }
+        const parsed = JSON.parse(jsonMatch[0]);
 
-    return {
-      tool: parsed.tool,
-      args: parsed.args || {},
-      thought: parsed.thought,
-    };
-  } catch {
-    // JSON parsing failed - check for completion signals in plain text
-    return detectNaturalLanguageCompletion(response);
-  }
+        if (!parsed.tool) {
+            // JSON found but no tool field - check for completion signals
+            return detectNaturalLanguageCompletion(response);
+        }
+
+        return {
+            tool: parsed.tool,
+            args: parsed.args || {},
+            thought: parsed.thought,
+        };
+    } catch {
+        // JSON parsing failed - check for completion signals in plain text
+        return detectNaturalLanguageCompletion(response);
+    }
 }
 
 /**
  * Detect if the LLM response indicates task completion in natural language
  * This is a fallback for when the LLM doesn't follow JSON format
  */
-function detectNaturalLanguageCompletion(response: string): ParsedToolCall | null {
-  const lowerResponse = response.toLowerCase();
-  
-  // Completion signal patterns (Chinese and English)
-  const completionPatterns = [
-    'task complete',
-    'task completed',
-    'successfully completed',
-    'successfully finished',
-    'i have completed',
-    'i\'ve completed',
-    'the task is done',
-    'task is complete',
-    'finished the task',
-    'completed successfully',
-    '任务完成',
-    '已完成',
-    '成功完成',
-    '执行完成',
-    '已成功',
-  ];
-  
-  const isCompletion = completionPatterns.some(pattern => 
-    lowerResponse.includes(pattern)
-  );
-  
-  if (isCompletion) {
-    // Extract a summary from the response (first 500 chars)
-    const summary = response.trim().substring(0, 500);
-    return {
-      tool: 'finish',
-      args: { result: summary },
-      thought: 'Auto-detected completion from natural language response',
-    };
-  }
-  
-  return null;
-}
+function detectNaturalLanguageCompletion(
+    response: string
+): ParsedToolCall | null {
+    const lowerResponse = response.toLowerCase();
 
+    // Completion signal patterns (Chinese and English)
+    const completionPatterns = [
+        'task complete',
+        'task completed',
+        'successfully completed',
+        'successfully finished',
+        'i have completed',
+        "i've completed",
+        'the task is done',
+        'task is complete',
+        'finished the task',
+        'completed successfully',
+        '任务完成',
+        '已完成',
+        '成功完成',
+        '执行完成',
+        '已成功',
+    ];
+
+    const isCompletion = completionPatterns.some((pattern) =>
+        lowerResponse.includes(pattern)
+    );
+
+    if (isCompletion) {
+        // Extract a summary from the response (first 500 chars)
+        const summary = response.trim().substring(0, 500);
+        return {
+            tool: 'finish',
+            args: { result: summary },
+            thought: 'Auto-detected completion from natural language response',
+        };
+    }
+
+    return null;
+}
