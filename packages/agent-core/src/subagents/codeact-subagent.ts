@@ -140,10 +140,18 @@ export class CodeActSubAgent extends BaseSubAgent {
 
             const duration = Date.now() - startTime;
 
+            // Build enhanced output with execution details
+            const executionDetails = this.formatExecutionDetails(
+                toolHistory,
+                generatedCodes
+            );
+
             // Build result
             if (result.success) {
+                // Create output message with execution details
+                const outputText = `${result.summary}\n\n${executionDetails}`;
                 return this.createSuccessResult(
-                    createTextMessage(result.summary, 'subagent'),
+                    createTextMessage(outputText, 'subagent'),
                     artifacts,
                     duration,
                     {
@@ -151,10 +159,21 @@ export class CodeActSubAgent extends BaseSubAgent {
                     }
                 );
             } else {
-                return this.createErrorResult(
-                    result.error || 'Unknown error',
-                    duration
-                );
+                // Include execution details even on failure for debugging
+                const errorOutput = `${result.error || 'Unknown error'}\n\n${executionDetails}`;
+                return {
+                    success: false,
+                    output: {
+                        id: `error_${Date.now()}`,
+                        text: errorOutput,
+                        content: [{ type: 'text', text: errorOutput }],
+                        timestamp: new Date(),
+                        source: 'subagent',
+                    },
+                    artifacts: [],
+                    error: result.error || 'Unknown error',
+                    duration,
+                };
             }
         } catch (error) {
             const duration = Date.now() - startTime;
@@ -408,6 +427,57 @@ export class CodeActSubAgent extends BaseSubAgent {
                     summary: `Unknown tool: ${toolCall.tool}`,
                 };
         }
+    }
+
+    /**
+     * Format execution details for UI display
+     */
+    private formatExecutionDetails(
+        toolHistory: ToolHistoryEntry[],
+        generatedCodes: string[]
+    ): string {
+        if (toolHistory.length === 0) {
+            return '';
+        }
+
+        const lines: string[] = ['---', '**执行过程：**'];
+
+        toolHistory.forEach((entry, i) => {
+            const status = entry.result.success ? '✅' : '❌';
+            const toolName = entry.tool;
+
+            // Format based on tool type
+            if (toolName === 'runCode') {
+                const codePreview = (entry.args.code as string)
+                    ?.split('\n')
+                    .slice(0, 3)
+                    .join(' ')
+                    .substring(0, 80);
+                lines.push(
+                    `${i + 1}. ${status} **runCode**: ${codePreview}${
+                        codePreview && codePreview.length >= 80 ? '...' : ''
+                    }`
+                );
+                if (entry.result.summary) {
+                    lines.push(`   ↳ ${entry.result.summary.substring(0, 100)}`);
+                }
+            } else if (toolName === 'fetchData') {
+                const target = entry.args.target || 'all';
+                lines.push(`${i + 1}. ${status} **fetchData**: ${target}`);
+            } else if (toolName === 'summarizeResult') {
+                lines.push(`${i + 1}. ${status} **summarizeResult**`);
+            } else {
+                lines.push(`${i + 1}. ${status} **${toolName}**`);
+            }
+        });
+
+        // Add code count
+        if (generatedCodes.length > 0) {
+            lines.push('');
+            lines.push(`📝 生成了 ${generatedCodes.length} 段代码`);
+        }
+
+        return lines.join('\n');
     }
 
     /**

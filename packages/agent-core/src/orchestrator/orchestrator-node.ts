@@ -75,6 +75,18 @@ Choose the most appropriate one based on the current state and goal.
 3. Choose the best SubAgent for the next step
 4. If the task is complete, indicate completion
 
+## IMPORTANT: Data Formatting for Users
+When the task involves retrieving, listing, or displaying data to the user:
+- Do NOT consider the task complete just because data was stored in state variables
+- The data MUST be formatted and presented in a user-friendly format
+- Ask the SubAgent to format and return the actual data content, not just counts or summaries
+- Example: If user asks "list all tabs", the result must include the actual tab titles and URLs, not just "found 29 tabs"
+
+When calling a SubAgent for data retrieval tasks:
+- Include explicit instructions to format the data for display
+- Request structured output (e.g., numbered lists, tables, categories)
+- Ask for the complete data, not just metadata
+
 ## Output Format
 You MUST respond with a valid JSON object:
 
@@ -83,14 +95,14 @@ For calling a SubAgent:
     "action": "call_subagent",
     "agentName": "subagent_name",
     "reasoning": "Why this SubAgent is needed",
-    "inputText": "Instructions for the SubAgent"
+    "inputText": "Instructions for the SubAgent (include formatting requirements for data tasks)"
 }
 
 For completing the task:
 {
     "action": "complete",
     "reasoning": "Why the task is complete",
-    "result": "Summary of what was accomplished"
+    "result": "Detailed summary with actual data/results formatted for user display"
 }
 
 For errors:

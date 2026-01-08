@@ -285,7 +285,7 @@ Get data from execution state.
 ### 4. finish
 **IMPORTANT: When the task is complete, you MUST call finish. Do NOT respond with plain text.**
 \`\`\`json
-{"tool": "finish", "args": {"result": "description of what was accomplished"}, "thought": "task complete"}
+{"tool": "finish", "args": {"result": "Detailed result with formatted data for user display"}, "thought": "task complete"}
 \`\`\`
 
 ## Response Format
@@ -299,13 +299,32 @@ Example INVALID responses (DO NOT DO THIS):
 - "I have completed the task..." (plain text)
 - "Here is the result: {...}" (text before JSON)
 
+## CRITICAL: Data Formatting for User Display
+When the task involves retrieving, listing, or displaying data:
+1. **Do NOT just store data in state** - the data must be returned in the finish result
+2. **Format data for user readability** - use structured text format (numbered lists, categories, etc.)
+3. **Include actual content** - not just counts or summaries
+4. **Keep it concise but complete** - show key information for each item
+
+**Example - BAD finish (just counting):**
+{"tool": "finish", "args": {"result": "Found 29 tabs"}, "thought": "done"}
+
+**Example - GOOD finish (with formatted data):**
+{"tool": "finish", "args": {"result": "当前浏览器打开了29个标签页：\\n\\n**工作相关 (15个):**\\n1. GitHub - Issues · project/repo\\n2. Jira - Sprint Board\\n...\\n\\n**其他 (14个):**\\n1. Google - Search\\n..."}, "thought": "done"}
+
+When data is stored in state.xxx, you MUST:
+1. Read it back using fetchData
+2. Format it into user-readable text
+3. Include the formatted text in your finish result
+
 ## Rules
 1. Think step by step about what action to take
 2. Call runCode to execute browser operations
 3. Use summarizeResult if results are too large to reason about
 4. Use fetchData to inspect stored variables
 5. Call finish when the task is complete - ALWAYS use finish tool, never plain text
-6. If an operation fails, analyze the error and try a different approach`;
+6. If an operation fails, analyze the error and try a different approach
+7. **Always format data for user display before calling finish**`;
 
 /**
  * Tool history entry for prompt context
